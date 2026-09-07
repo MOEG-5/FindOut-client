@@ -1,4 +1,39 @@
-# FindOut client
+# FindOut
+
+**FindOut is a tiny desktop assistant for quickly asking questions without breaking your flow.**
+
+Press a shortcut (Windows: alt+space Linux: super + space), type what you want to know, and get an answer. FindOut can search the web when needed, understand images from your clipboard, and use a small amount of information about your computer to give more useful system-specific answers.
+
+It runs on **Windows and Linux** and is designed to stay lightweight, fast, and out of the way.
+
+## Try it for free
+
+Download the latest version from **Releases** and launch FindOut.
+
+When it asks for an activation key, simply enter:
+
+**trial**
+
+You'll receive a free trial with **20 requests per day**. Your allowance resets automatically each day.
+
+No API keys or separate accounts are needed.
+
+## What can it do?
+
+* Answer quick questions from anywhere on your desktop
+* Search the web for current information
+* Help with questions about your computer
+* Understand screenshots and other images copied to your clipboard
+* Give useful answers without opening a browser and digging through search results
+* Stay hidden until you call it with a keyboard shortcut
+
+FindOut lives in your system tray and can be opened whenever you need it.
+
+> An image of FindOut in action will go here.
+
+## For developers
+
+FindOut is a small native Slint application. Provider keys, model selection, search, trial limits, and other service logic live on the FindOut server. The client stores only a revocable installation token in the operating system keychain.
 
 Licensed under [GPL-3.0-only](LICENSE).
 
