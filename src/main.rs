@@ -1,0 +1,1884 @@
+use base64::Engine as _;
+use global_hotkey::hotkey::{Code, HotKey, Modifiers};
+use global_hotkey::{GlobalHotKeyEvent, GlobalHotKeyManager, HotKeyState};
+use image::{imageops, DynamicImage, ImageFormat, ImageReader, Rgba, RgbaImage};
+use serde::de::DeserializeOwned;
+use serde::{Deserialize, Serialize};
+use slint::winit_030::{winit, EventResult, WinitWindowAccessor};
+use slint::{CloseRequestResponse, ComponentHandle, Timer, Weak};
+#[cfg(feature = "dev-metrics")]
+use std::io::Write;
+use std::io::{Cursor, Read};
+#[cfg(feature = "dev-metrics")]
+use std::path::PathBuf;
+#[cfg(any(target_os = "linux", target_os = "windows"))]
+use std::process::Command;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
+
+const CURRENT_VERSION: &str = env!("CARGO_PKG_VERSION");
+const PROTOCOL_VERSION: &str = "1";
+const KEYRING_SERVICE: &str = "app.findout.client";
+const KEYRING_USER: &str = "installation";
+const MAX_QUERY_CHARS: usize = 4_000;
+// Fits one base64-encoded image plus JSON below Vercel's 4.5 MB request limit.
+const MAX_IMAGE_BYTES: usize = 3_000_000;
+const MAX_IMAGE_BASE64_CHARS: usize = ((MAX_IMAGE_BYTES + 2) / 3) * 4;
+const MAX_SOURCE_IMAGE_DIMENSION: u32 = 16_384;
+const MAX_SOURCE_IMAGE_PIXELS: u64 = 64_000_000;
+const MAX_IMAGE_DIMENSION: u32 = 4_096;
+const CANVAS_WIDTH: u32 = 1_920;
+const CANVAS_HEIGHT: u32 = 1_080;
+const CANVAS_BG: [u8; 4] = [14, 17, 24, 255];
+const MAX_RESPONSE_BYTES: u64 = 128 * 1024;
+const POPUP_WIDTH: i32 = 560;
+const POPUP_HEIGHT: i32 = 320;
+const FOCUS_LOSS_DEBOUNCE: Duration = Duration::from_millis(100);
+const HIDE_GRACE: Duration = Duration::from_secs(10);
+const UPDATE_CHECK_TIMEOUT: Duration = Duration::from_secs(5);
+const THEME_LIGHT: i32 = 0;
+const THEME_DARK: i32 = 1;
+const THEME_RETRO: i32 = 2;
+
+slint::slint! {
+    import { Palette, ScrollView } from "std-widgets.slint";
+
+    export component FindOutWindow inherits Window {
+        title: "FindOut";
+        always-on-top: true;
+        no-frame: true;
+        width: 560px;
+        height: 320px;
+        // ponytail: translucent tint, not backdrop blur; add a platform compositor hook if real blur is required.
+        background: transparent;
+
+        in property <bool> activated: false;
+        in property <bool> busy: false;
+        in property <bool> has-image: false;
+        in property <bool> can-force-search: false;
+        in property <string> answer: "";
+        in property <string> status: "";
+        in property <string> update_available: "";
+        in property <bool> dev_metrics: false;
+        in property <string> roundtrip: "";
+        in-out property <string> question: "";
+        in-out property <string> activation_key: "";
+        in property <int> theme: 2;
+        init => { Palette.color-scheme = root.theme == 0 ? ColorScheme.light : ColorScheme.dark; }
+        changed theme => { Palette.color-scheme = root.theme == 0 ? ColorScheme.light : ColorScheme.dark; }
+
+        private property <color> panel_bg: root.theme == 0 ? #fffaf2ee : root.theme == 1 ? #10151de8 : #160e0be6;
+        private property <color> field_bg: root.theme == 0 ? #fffdf8e6 : root.theme == 1 ? #171d27e6 : #24140dd9;
+        private property <color> answer_bg: root.theme == 0 ? #fffaf0cc : root.theme == 1 ? #131a24cc : #21130db8;
+        private property <color> primary_text: root.theme == 0 ? #8b3f1f : root.theme == 1 ? #e28a4e : #d27839;
+        private property <color> accent: root.theme == 0 ? #a94f24 : root.theme == 1 ? #e07839 : #c6632f;
+        private property <color> bright_accent: root.theme == 0 ? #b95b2a : root.theme == 1 ? #f0a065 : #f0a065;
+        private property <color> muted_text: root.theme == 0 ? #8c5a3f : root.theme == 1 ? #9c735d : #9a5b36;
+        private property <color> faint_text: root.theme == 0 ? #a57d63 : root.theme == 1 ? #735b4a : #70432a;
+        private property <color> border: root.theme == 0 ? #b96b3da6 : root.theme == 1 ? #9b5b3c99 : #753c1fa6;
+        private property <color> field_border: root.theme == 0 ? #b96b3d99 : root.theme == 1 ? #744b3d99 : #6d3b2299;
+        private property <color> selection_bg: root.theme == 0 ? #e29b6aa6 : root.theme == 1 ? #c66a3da6 : #a9552fa6;
+        private property <color> selection_fg: root.theme == 0 ? #3a1b0e : root.theme == 1 ? #24150d : #21120b;
+
+        callback setup-tray();
+        callback activate(string);
+        callback submit(string, bool);
+        callback paste-image();
+        callback clear-image();
+        callback copy-answer();
+        callback open-releases();
+        callback escape();
+
+        panel := Rectangle {
+            x: 4px;
+            y: 4px;
+            width: parent.width - 8px;
+            height: parent.height - 8px;
+            background: root.panel_bg;
+            border-radius: 16px;
+            border-width: 1px;
+            border-color: root.border;
+            clip: true;
+
+            VerticalLayout {
+                padding: 16px;
+                spacing: 9px;
+
+                HorizontalLayout {
+                    height: 18px;
+                    Text {
+                        text: "FINDOUT";
+                        color: root.accent;
+                        font-size: 13px;
+                        font-weight: 600;
+                        horizontal-stretch: 1;
+                    }
+                    Text {
+                        text: !root.activated ? "ACTIVATE ONCE" :
+                            root.dev_metrics ? "DEV · SUPER + SPACE" : "SUPER + SPACE";
+                        color: root.muted_text;
+                        font-size: 10px;
+                    }
+                }
+
+                Rectangle {
+                    width: 26px;
+                    height: 2px;
+                    background: root.accent;
+                    border-radius: 1px;
+                }
+
+                if !root.activated: VerticalLayout {
+                    spacing: 9px;
+
+                    Text {
+                        text: "Enter your activation key. The device token stays in your keychain.";
+                        color: root.muted_text;
+                        font-size: 12px;
+                        wrap: word-wrap;
+                    }
+
+                    activation_shell := Rectangle {
+                        height: 44px;
+                        background: root.field_bg;
+                        border-radius: 10px;
+                        border-width: 1px;
+                        border-color: activation_input.has-focus ? root.accent : root.field_border;
+                        clip: true;
+
+                        activation_input := TextInput {
+                            x: 13px;
+                            width: parent.width - 26px;
+                            height: parent.height;
+                            text <=> root.activation_key;
+                            color: root.primary_text;
+                            selection-background-color: root.selection_bg;
+                            selection-foreground-color: root.selection_fg;
+                            font-size: 15px;
+                            input-type: password;
+                            vertical-alignment: center;
+                            enabled: !root.busy;
+                            accepted => { root.activate(self.text); root.activation_key = ""; }
+                            key-pressed(event) => {
+                                if (event.text == Key.Escape) { root.escape(); accept }
+                                reject
+                            }
+                        }
+                    }
+                }
+
+                if root.activated: VerticalLayout {
+                    spacing: 9px;
+
+                    input_shell := Rectangle {
+                        height: 44px;
+                        background: root.field_bg;
+                        border-radius: 10px;
+                        border-width: 1px;
+                        border-color: input.has-focus ? root.accent : root.field_border;
+                        clip: true;
+
+                        Rectangle {
+                            x: 13px;
+                            width: paste_button.x - self.x - 8px;
+                            height: parent.height;
+                            clip: true;
+
+                            input := TextInput {
+                                private property <length> scroll-x;
+                                x: min(0px, max(parent.width - self.width, self.scroll-x));
+                                width: max(parent.width, self.preferred-width + self.text-cursor-width);
+                                single-line: true;
+                                cursor-position-changed(pos) => {
+                                    self.scroll-x = max(-pos.x + 4px,
+                                        min(self.scroll-x, parent.width - pos.x - self.text-cursor-width - 4px));
+                                }
+                                height: parent.height;
+                                text <=> root.question;
+                                color: root.primary_text;
+                                selection-background-color: root.selection_bg;
+                                selection-foreground-color: root.selection_fg;
+                                font-size: 16px;
+                                vertical-alignment: center;
+                                enabled: !root.busy;
+                                accepted => { root.submit(self.text, false); root.question = ""; }
+                                key-pressed(event) => {
+                                    if (event.text == Key.Escape) { root.escape(); accept }
+                                    if ((event.modifiers.control || event.modifiers.meta) &&
+                                        (event.text == "v" || event.text == "V")) {
+                                        root.paste-image();
+                                    }
+                                    reject
+                                }
+                            }
+                        }
+
+                        paste_button := Rectangle {
+                            x: parent.width - 104px;
+                            y: 4px;
+                            width: 42px;
+                            height: parent.height - 8px;
+                            background: paste_area.pressed ? root.accent : root.field_border;
+                            border-radius: 7px;
+                            Text {
+                                text: root.has-image ? "IMG" : "＋";
+                                color: root.accent;
+                                font-size: root.has-image ? 10px : 18px;
+                                horizontal-alignment: center;
+                                vertical-alignment: center;
+                            }
+                            paste_area := TouchArea {
+                                clicked => { root.paste-image(); }
+                            }
+                        }
+
+                        send_button := Rectangle {
+                            x: parent.width - 56px;
+                            y: 4px;
+                            width: 42px;
+                            height: parent.height - 8px;
+                            background: send_area.pressed ? root.accent : root.accent;
+                            border-radius: 7px;
+                            Text {
+                                text: root.busy ? "…" : "→";
+                                color: root.bright_accent;
+                                font-size: 18px;
+                                horizontal-alignment: center;
+                                vertical-alignment: center;
+                            }
+                            send_area := TouchArea {
+                                enabled: !root.busy;
+                                clicked => { root.submit(input.text, false); root.question = ""; }
+                            }
+                        }
+                    }
+
+                    if root.has-image: Rectangle {
+                        height: 18px;
+                        Text {
+                            text: "IMAGE ATTACHED";
+                            color: root.accent;
+                            font-size: 10px;
+                            horizontal-stretch: 1;
+                        }
+                        TouchArea {
+                            clicked => { root.clear-image(); }
+                        }
+                    }
+
+                    answer_shell := Rectangle {
+                        vertical-stretch: 1;
+                        background: root.answer_bg;
+                        border-radius: 10px;
+                        border-width: 1px;
+                        border-color: root.field_border;
+                        clip: true;
+
+                        answer_scroll := ScrollView {
+                            x: 12px;
+                            y: 9px;
+                            width: parent.width - 24px;
+                            height: parent.height - 18px;
+                            viewport-width: self.visible-width;
+                            viewport-height: answer_text.height;
+                            horizontal-scrollbar-policy: always-off;
+                            mouse-drag-pan-enabled: false;
+
+                            answer_text := TextInput {
+                                width: answer_scroll.visible-width - 14px;
+                                height: max(answer_scroll.visible-height, self.preferred-height);
+                                page-height: answer_scroll.visible-height;
+                                changed text => { answer_scroll.viewport-y = 0px; }
+                                cursor-position-changed(pos) => {
+                                    answer_scroll.viewport-y = min(0px,
+                                        max(answer_scroll.visible-height - self.height,
+                                            max(-pos.y, min(answer_scroll.viewport-y,
+                                                answer_scroll.visible-height - pos.y - 20px))));
+                                }
+                                text: root.answer.is-empty ? "Ask a question to begin" : root.answer;
+                                color: root.answer.is-empty ? root.faint_text : root.primary_text;
+                                font-size: 15px;
+                                read-only: true;
+                                single-line: false;
+                                wrap: word-wrap;
+                                vertical-alignment: top;
+                                selection-background-color: root.selection_bg;
+                                selection-foreground-color: root.selection_fg;
+                                key-pressed(event) => {
+                                    if (event.text == Key.Escape) { root.escape(); accept }
+                                    reject
+                                }
+                            }
+                        }
+                    }
+
+                    HorizontalLayout {
+                        height: 18px;
+                        Text {
+                            text: root.has-image ? "CTRL+V TO REPLACE IMAGE" : "CTRL+V TO ATTACH IMAGE";
+                            color: root.faint_text;
+                            font-size: 10px;
+                            horizontal-stretch: 1;
+                        }
+                        if root.dev_metrics && !root.roundtrip.is-empty: Text {
+                            width: 70px;
+                            text: root.roundtrip;
+                            color: root.muted_text;
+                            font-size: 10px;
+                            horizontal-alignment: right;
+                        }
+                        if root.can-force-search: Rectangle {
+                            width: 82px;
+                            Text {
+                                text: "SEARCH WEB";
+                                color: root.accent;
+                                font-size: 10px;
+                                horizontal-alignment: center;
+                                vertical-alignment: center;
+                            }
+                            TouchArea {
+                                clicked => { root.submit("", true); }
+                            }
+                        }
+                        if !root.answer.is-empty: Rectangle {
+                            width: 36px;
+                            Text {
+                                text: "COPY";
+                                color: root.muted_text;
+                                font-size: 10px;
+                                horizontal-alignment: center;
+                                vertical-alignment: center;
+                            }
+                            TouchArea {
+                                clicked => { root.copy-answer(); }
+                            }
+                        }
+                    }
+                }
+
+                HorizontalLayout {
+                    height: 18px;
+                    Text {
+                        text: root.status;
+                        color: root.muted_text;
+                        font-size: 10px;
+                        horizontal-stretch: 1;
+                        overflow: elide;
+                    }
+                    if !root.update_available.is-empty: Rectangle {
+                        width: 112px;
+                        Text {
+                            text: root.update_available;
+                            color: root.accent;
+                            font-size: 10px;
+                            horizontal-alignment: right;
+                            vertical-alignment: center;
+                        }
+                        TouchArea {
+                            clicked => { root.open-releases(); }
+                        }
+                    }
+                }
+            }
+        }
+
+    }
+
+    export component FindOutTray inherits SystemTrayIcon {
+        icon: @image-url("../assets/findout-tray.svg");
+        tooltip: "FindOut";
+        title: "FindOut";
+        in property <int> theme: 2;
+
+        callback show-window();
+        callback select-theme(int);
+        callback quit();
+
+        Menu {
+            MenuItem {
+                title: "Show FindOut";
+                activated => { root.show-window(); }
+            }
+            MenuSeparator { }
+            MenuItem {
+                title: "Light";
+                checkable: true;
+                checked: root.theme == 0;
+                activated => { root.select-theme(0); }
+            }
+            MenuItem {
+                title: "Dark";
+                checkable: true;
+                checked: root.theme == 1;
+                activated => { root.select-theme(1); }
+            }
+            MenuItem {
+                title: "Retro";
+                checkable: true;
+                checked: root.theme == 2;
+                activated => { root.select-theme(2); }
+            }
+            MenuSeparator { }
+            MenuItem {
+                title: "Quit";
+                activated => { root.quit(); }
+            }
+        }
+    }
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+struct ImagePayload {
+    mime_type: String,
+    data: String,
+}
+
+#[derive(Serialize)]
+struct ActivationRequest<'a> {
+    activation_key: &'a str,
+}
+
+#[derive(Deserialize)]
+struct ActivationResponse {
+    device_token: String,
+}
+
+#[derive(Serialize)]
+struct AskRequest {
+    query: String,
+    force_search: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    image: Option<ImagePayload>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    system_context: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct AskResponse {
+    answer: String,
+    searched: bool,
+}
+
+#[derive(Deserialize)]
+struct GitHubRelease {
+    tag_name: String,
+}
+
+#[derive(Deserialize)]
+struct ErrorBody {
+    message: Option<String>,
+}
+
+enum RequestError {
+    Http(u16, String),
+    Transport,
+    InvalidResponse,
+}
+
+fn api_origin() -> Result<String, String> {
+    let value = std::env::var("FINDOUT_API_ORIGIN")
+        .ok()
+        .or_else(|| option_env!("FINDOUT_API_ORIGIN").map(str::to_owned))
+        .or_else(|| cfg!(debug_assertions).then(|| "http://127.0.0.1:8787".to_owned()))
+        .ok_or_else(|| "FINDOUT_API_ORIGIN must be set when building a release".to_owned())?;
+    let parsed = url::Url::parse(&value).map_err(|_| "FINDOUT_API_ORIGIN is not a valid URL")?;
+    let host = parsed
+        .host_str()
+        .ok_or_else(|| "FINDOUT_API_ORIGIN must include a host".to_owned())?;
+    if parsed.query().is_some() || parsed.fragment().is_some() {
+        return Err("FINDOUT_API_ORIGIN cannot contain a query or fragment".to_owned());
+    }
+    let loopback =
+        matches!(host, "localhost" | "127.0.0.1" | "::1") || host.ends_with(".localhost");
+    if !cfg!(debug_assertions) && parsed.scheme() != "https" && !loopback {
+        return Err("FINDOUT_API_ORIGIN must use HTTPS in release builds".to_owned());
+    }
+    Ok(value.trim_end_matches('/').to_owned())
+}
+
+fn entry() -> Result<keyring::Entry, String> {
+    keyring::Entry::new(KEYRING_SERVICE, KEYRING_USER)
+        .map_err(|_| "System keychain is unavailable".to_owned())
+}
+
+fn token() -> Result<Option<String>, String> {
+    match entry()?.get_password() {
+        Ok(token) => Ok(Some(token)),
+        Err(keyring::Error::NoEntry) => Ok(None),
+        Err(_) => Err("System keychain is locked or unavailable".to_owned()),
+    }
+}
+
+fn validate_activation_key(value: &str) -> Result<&str, String> {
+    let value = value.trim();
+    if !(8..=256).contains(&value.len()) {
+        return Err("Activation key must be 8–256 characters".to_owned());
+    }
+    Ok(value)
+}
+
+fn validate_query(value: &str) -> Result<&str, String> {
+    let value = value.trim();
+    if value.is_empty() {
+        return Err("Enter a question".to_owned());
+    }
+    if value.chars().count() > MAX_QUERY_CHARS {
+        return Err(format!(
+            "Question must be at most {MAX_QUERY_CHARS} characters"
+        ));
+    }
+    Ok(value)
+}
+
+fn validate_image_dimensions(width: u32, height: u32) -> Result<(), String> {
+    if width == 0
+        || height == 0
+        || width > MAX_SOURCE_IMAGE_DIMENSION
+        || height > MAX_SOURCE_IMAGE_DIMENSION
+        || u64::from(width) * u64::from(height) > MAX_SOURCE_IMAGE_PIXELS
+    {
+        return Err("Image dimensions are out of range".to_owned());
+    }
+    Ok(())
+}
+
+fn encode_png(image: RgbaImage) -> Result<ImagePayload, String> {
+    let mut output = Cursor::new(Vec::new());
+    DynamicImage::ImageRgba8(image)
+        .write_to(&mut output, ImageFormat::Png)
+        .map_err(|_| "Could not encode the image".to_owned())?;
+    let bytes = output.into_inner();
+    if bytes.len() > MAX_IMAGE_BYTES {
+        return Err("Image is too large".to_owned());
+    }
+    Ok(ImagePayload {
+        mime_type: "image/png".to_owned(),
+        data: base64::engine::general_purpose::STANDARD.encode(bytes),
+    })
+}
+
+fn normalize_rgba_image(mut image: RgbaImage) -> Result<ImagePayload, String> {
+    let (width, height) = image.dimensions();
+    validate_image_dimensions(width, height)?;
+
+    if width > MAX_IMAGE_DIMENSION || height > MAX_IMAGE_DIMENSION {
+        let longest = u64::from(width.max(height));
+        let new_width =
+            ((u64::from(width) * u64::from(MAX_IMAGE_DIMENSION)) / longest).max(1) as u32;
+        let new_height =
+            ((u64::from(height) * u64::from(MAX_IMAGE_DIMENSION)) / longest).max(1) as u32;
+        image = DynamicImage::ImageRgba8(image)
+            .resize_exact(new_width, new_height, imageops::FilterType::Triangle)
+            .to_rgba8();
+    }
+
+    let (width, height) = image.dimensions();
+    if width <= CANVAS_WIDTH && height <= CANVAS_HEIGHT {
+        let mut canvas = RgbaImage::from_pixel(CANVAS_WIDTH, CANVAS_HEIGHT, Rgba(CANVAS_BG));
+        let x = i64::from((CANVAS_WIDTH - width) / 2);
+        let y = i64::from((CANVAS_HEIGHT - height) / 2);
+        imageops::overlay(&mut canvas, &image, x, y);
+        image = canvas;
+    }
+    encode_png(image)
+}
+
+fn normalize_image_bytes(mime_type: &str, bytes: &[u8]) -> Result<ImagePayload, String> {
+    if bytes.is_empty() || bytes.len() > MAX_IMAGE_BYTES {
+        return Err("Image is too large or empty".to_owned());
+    }
+    let format = match mime_type {
+        "image/png" => ImageFormat::Png,
+        "image/jpeg" => ImageFormat::Jpeg,
+        _ => return Err("Unsupported image type — send PNG or JPEG".to_owned()),
+    };
+    let dimensions = ImageReader::with_format(Cursor::new(bytes), format)
+        .into_dimensions()
+        .map_err(|_| "Unsupported or corrupt image".to_owned())?;
+    validate_image_dimensions(dimensions.0, dimensions.1)?;
+    let decoded = ImageReader::with_format(Cursor::new(bytes), format)
+        .decode()
+        .map_err(|_| "Unsupported or corrupt image".to_owned())?;
+    normalize_rgba_image(decoded.to_rgba8())
+}
+
+fn normalize_image_payload(image: ImagePayload) -> Result<ImagePayload, String> {
+    if image.data.len() > MAX_IMAGE_BASE64_CHARS {
+        return Err("Image is too large".to_owned());
+    }
+    let mime_type = image.mime_type.to_ascii_lowercase();
+    if mime_type != "image/png" && mime_type != "image/jpeg" {
+        return Err("Unsupported image type — send PNG or JPEG".to_owned());
+    }
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(&image.data)
+        .map_err(|_| "Invalid image data".to_owned())?;
+    if base64::engine::general_purpose::STANDARD.encode(&bytes) != image.data {
+        return Err("Invalid image data".to_owned());
+    }
+    normalize_image_bytes(&mime_type, &bytes)
+}
+
+fn bounded_body(response: ureq::Response) -> Result<Vec<u8>, RequestError> {
+    let mut bytes = Vec::new();
+    response
+        .into_reader()
+        .take(MAX_RESPONSE_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|_| RequestError::InvalidResponse)?;
+    if bytes.len() as u64 > MAX_RESPONSE_BYTES {
+        return Err(RequestError::InvalidResponse);
+    }
+    Ok(bytes)
+}
+
+fn response_json<T: DeserializeOwned>(response: ureq::Response) -> Result<T, RequestError> {
+    let bytes = bounded_body(response)?;
+    serde_json::from_slice(&bytes).map_err(|_| RequestError::InvalidResponse)
+}
+
+fn error_message(status: u16, response: ureq::Response) -> String {
+    let message = bounded_body(response)
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<ErrorBody>(&bytes).ok())
+        .and_then(|body| body.message)
+        .filter(|message| !message.is_empty())
+        .map(|message| message.chars().take(512).collect::<String>());
+    message.unwrap_or_else(|| match status {
+        401 => "Activation required".to_owned(),
+        413 => "Request is too large".to_owned(),
+        429 => "Too many requests; try again shortly".to_owned(),
+        _ => format!("FindOut server error ({status})"),
+    })
+}
+
+fn post_json<T: DeserializeOwned>(
+    request: ureq::Request,
+    body: impl Serialize,
+) -> Result<T, RequestError> {
+    match request.send_json(body) {
+        Ok(response) => response_json(response),
+        Err(ureq::Error::Status(status, response)) => {
+            Err(RequestError::Http(status, error_message(status, response)))
+        }
+        Err(_) => Err(RequestError::Transport),
+    }
+}
+
+fn request_message(error: RequestError) -> String {
+    match error {
+        RequestError::Http(_, message) => message,
+        RequestError::Transport => "Cannot reach the FindOut server".to_owned(),
+        RequestError::InvalidResponse => "Invalid response from the FindOut server".to_owned(),
+    }
+}
+
+fn agent() -> ureq::Agent {
+    ureq::AgentBuilder::new()
+        .timeout(Duration::from_secs(60))
+        .redirects(0)
+        .build()
+}
+
+fn version_parts(value: &str) -> Option<[u64; 3]> {
+    let mut parts = value.strip_prefix('v').unwrap_or(value).split('.');
+    let version = [
+        parts.next()?.parse().ok()?,
+        parts.next()?.parse().ok()?,
+        parts.next()?.parse().ok()?,
+    ];
+    parts.next().is_none().then_some(version)
+}
+
+fn is_newer_version(latest: &str, current: &str) -> bool {
+    match (version_parts(latest), version_parts(current)) {
+        (Some(latest), Some(current)) => latest > current,
+        _ => false,
+    }
+}
+
+fn github_release_urls() -> Option<(String, String)> {
+    let repository = option_env!("FINDOUT_GITHUB_REPOSITORY")?;
+    let mut parts = repository.split('/');
+    let owner = parts.next()?;
+    let name = parts.next()?;
+    let valid_segment = |value: &str| {
+        !value.is_empty()
+            && value
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
+    };
+    if parts.next().is_some() || !valid_segment(owner) || !valid_segment(name) {
+        return None;
+    }
+    Some((
+        format!("https://api.github.com/repos/{repository}/releases/latest"),
+        format!("https://github.com/{repository}/releases"),
+    ))
+}
+
+fn check_for_update() -> Option<String> {
+    let (api_url, _) = github_release_urls()?;
+    let response = agent()
+        .get(&api_url)
+        .set("Accept", "application/vnd.github+json")
+        .set("User-Agent", &format!("FindOut/{CURRENT_VERSION}"))
+        .timeout(UPDATE_CHECK_TIMEOUT)
+        .call()
+        .ok()?;
+    let release: GitHubRelease = response_json(response).ok()?;
+    is_newer_version(&release.tag_name, CURRENT_VERSION)
+        .then(|| format!("UPDATE {}", release.tag_name))
+}
+
+fn start_update_check(ui: Weak<FindOutWindow>) {
+    std::thread::spawn(move || {
+        let Some(update) = check_for_update() else {
+            return;
+        };
+        let _ = slint::invoke_from_event_loop(move || {
+            if let Some(ui) = ui.upgrade() {
+                ui.set_update_available(update.into());
+            }
+        });
+    });
+}
+
+fn open_releases_page() -> Result<(), String> {
+    let (_, releases_url) = github_release_urls()
+        .ok_or_else(|| "Update link is not configured for this build".to_owned())?;
+    #[cfg(target_os = "windows")]
+    let result = Command::new("cmd")
+        .args(["/C", "start", "", releases_url.as_str()])
+        .spawn();
+    #[cfg(target_os = "linux")]
+    let result = Command::new("xdg-open").arg(releases_url).spawn();
+    #[cfg(not(any(target_os = "linux", target_os = "windows")))]
+    let result: Result<std::process::Child, std::io::Error> = Err(std::io::Error::new(
+        std::io::ErrorKind::Unsupported,
+        "opening URLs is unsupported on this platform",
+    ));
+    result
+        .map(|_| ())
+        .map_err(|_| "Could not open the FindOut releases page".to_owned())
+}
+
+#[cfg(any(feature = "dev-metrics", test))]
+fn csv_field(value: &str) -> String {
+    format!(
+        "\"{}\"",
+        value
+            .replace('\\', "\\\\")
+            .replace('\r', "\\r")
+            .replace('\n', "\\n")
+            .replace('"', "\"\"")
+    )
+}
+
+#[cfg(feature = "dev-metrics")]
+fn metrics_path() -> std::io::Result<PathBuf> {
+    #[cfg(target_os = "windows")]
+    let base = std::env::var_os("LOCALAPPDATA").map(PathBuf::from);
+    #[cfg(not(target_os = "windows"))]
+    let base = std::env::var_os("XDG_STATE_HOME")
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".local/state")));
+    base.map(|path| path.join("findout").join("dev-metrics.csv"))
+        .ok_or_else(|| {
+            std::io::Error::new(std::io::ErrorKind::NotFound, "No local state directory")
+        })
+}
+
+#[cfg(feature = "dev-metrics")]
+fn append_metric(
+    request: &str,
+    response: &str,
+    elapsed: Duration,
+    outcome: &str,
+    searched: bool,
+    force_search: bool,
+    had_image: bool,
+) -> std::io::Result<()> {
+    let path = metrics_path()?;
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let needs_header = std::fs::metadata(&path)
+        .map(|metadata| metadata.len() == 0)
+        .unwrap_or(true);
+    let mut options = std::fs::OpenOptions::new();
+    options.create(true).append(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let mut file = options.open(path)?;
+    if needs_header {
+        writeln!(
+            file,
+            "timestamp_unix_ms,roundtrip_ms,outcome,searched,force_search,had_image,request,response"
+        )?;
+    }
+    let timestamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis();
+    writeln!(
+        file,
+        "{timestamp},{},{outcome},{searched},{force_search},{had_image},{},{}",
+        elapsed.as_millis(),
+        csv_field(request),
+        csv_field(response)
+    )
+}
+
+#[cfg(any(feature = "dev-metrics", test))]
+fn format_roundtrip(elapsed: Duration) -> String {
+    if elapsed < Duration::from_secs(1) {
+        format!("RT {} ms", elapsed.as_millis())
+    } else {
+        format!("RT {:.1} s", elapsed.as_secs_f64())
+    }
+}
+
+fn activate(origin: String, key: String, ui: Weak<FindOutWindow>) {
+    std::thread::spawn(move || {
+        let result = (|| -> Result<(), String> {
+            let key = validate_activation_key(&key)?;
+            let body: ActivationResponse = post_json(
+                agent()
+                    .post(&format!("{origin}/v1/activate"))
+                    .set("X-FindOut-Protocol", PROTOCOL_VERSION),
+                &ActivationRequest {
+                    activation_key: key,
+                },
+            )
+            .map_err(request_message)?;
+            if !(32..=4096).contains(&body.device_token.len())
+                || !body
+                    .device_token
+                    .chars()
+                    .all(|character| character.is_ascii_graphic())
+            {
+                return Err("Invalid activation response".to_owned());
+            }
+            entry()?
+                .set_password(&body.device_token)
+                .map_err(|_| "Could not save activation in the system keychain".to_owned())
+        })();
+        let _ = slint::invoke_from_event_loop(move || {
+            if let Some(ui) = ui.upgrade() {
+                ui.set_busy(false);
+                match result {
+                    Ok(()) => {
+                        ui.set_activated(true);
+                        ui.set_status("Activated".into());
+                    }
+                    Err(error) => ui.set_status(error.into()),
+                }
+            }
+        });
+    });
+}
+
+fn system_context() -> String {
+    #[cfg(target_os = "linux")]
+    {
+        let mut parts = Vec::new();
+        if let Ok(os_release) = std::fs::read_to_string("/etc/os-release") {
+            if let Some(name) = os_release.lines().find_map(|line| {
+                line.strip_prefix("NAME=\"")
+                    .map(|name| name.trim_end_matches('"').to_owned())
+            }) {
+                parts.push(name);
+            }
+        }
+        let package_managers = [
+            "pacman",
+            "apt-get",
+            "dnf",
+            "zypper",
+            "apk",
+            "xbps-install",
+            "emerge",
+        ];
+        if let Some(path) = std::env::var_os("PATH") {
+            let dirs: Vec<_> = std::env::split_paths(&path).collect();
+            if let Some(manager) = package_managers
+                .iter()
+                .find(|manager| dirs.iter().any(|dir| dir.join(manager).is_file()))
+            {
+                parts.push(format!("pkg:{manager}"));
+            }
+        }
+        if let Ok(shell) = std::env::var("SHELL") {
+            if !shell.is_empty() {
+                parts.push(format!("shell:{shell}"));
+            }
+        }
+        parts.join(" | ")
+    }
+    #[cfg(target_os = "windows")]
+    {
+        let info = os_info::get();
+        format!("{} {}", info.os_type(), info.version())
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "windows")))]
+    {
+        String::new()
+    }
+}
+
+fn query(
+    origin: String,
+    text: String,
+    force_search: bool,
+    image: Option<ImagePayload>,
+    ui: Weak<FindOutWindow>,
+    generation: Arc<Mutex<u64>>,
+    request_generation: u64,
+    _started: Instant,
+) {
+    std::thread::spawn(move || {
+        #[cfg(feature = "dev-metrics")]
+        let logged_request = text.clone();
+        #[cfg(feature = "dev-metrics")]
+        let had_image = image.is_some();
+        let result = (|| -> Result<AskResponse, String> {
+            let query = validate_query(&text)?.to_owned();
+            let device_token = token()?.ok_or_else(|| "Activation required".to_owned())?;
+            let response: Result<AskResponse, RequestError> = post_json(
+                agent()
+                    .post(&format!("{origin}/v1/query"))
+                    .set("X-FindOut-Protocol", PROTOCOL_VERSION)
+                    .set("Authorization", &format!("Bearer {device_token}")),
+                AskRequest {
+                    query,
+                    force_search,
+                    image: image.map(normalize_image_payload).transpose()?,
+                    system_context: Some(system_context()),
+                },
+            );
+            match response {
+                Err(RequestError::Http(401, _)) => {
+                    let _ = entry()?.delete_credential();
+                    Err("Activation required".to_owned())
+                }
+                Err(error) => Err(request_message(error)),
+                Ok(answer) => Ok(answer),
+            }
+        })();
+        #[cfg(feature = "dev-metrics")]
+        let elapsed = _started.elapsed();
+        #[cfg(feature = "dev-metrics")]
+        {
+            let (response, outcome, searched) = match &result {
+                Ok(answer) => (answer.answer.as_str(), "ok", answer.searched),
+                Err(error) => (error.as_str(), "error", false),
+            };
+            if let Err(error) = append_metric(
+                &logged_request,
+                response,
+                elapsed,
+                outcome,
+                searched,
+                force_search,
+                had_image,
+            ) {
+                eprintln!("FindOut metrics log unavailable: {error}");
+            }
+        }
+        #[cfg(feature = "dev-metrics")]
+        let roundtrip = format_roundtrip(elapsed);
+        let _ = slint::invoke_from_event_loop(move || {
+            if !is_current_generation(&generation, request_generation) {
+                return;
+            }
+            if let Some(ui) = ui.upgrade() {
+                ui.set_busy(false);
+                #[cfg(feature = "dev-metrics")]
+                ui.set_roundtrip(roundtrip.into());
+                match result {
+                    Ok(answer) => {
+                        ui.set_answer(answer.answer.into());
+                        ui.set_can_force_search(!answer.searched);
+                        ui.set_status(
+                            if answer.searched {
+                                "Searched"
+                            } else {
+                                "From knowledge"
+                            }
+                            .into(),
+                        );
+                    }
+                    Err(error) => {
+                        if error == "Activation required" {
+                            ui.set_activated(false);
+                        }
+                        ui.set_status(error.into());
+                    }
+                }
+            }
+        });
+    });
+}
+
+#[cfg(target_os = "linux")]
+fn read_clipboard_image() -> Result<Option<Vec<u8>>, String> {
+    gtk::init().map_err(|_| "Clipboard is unavailable".to_owned())?;
+    let Some(pixbuf) = gtk::Clipboard::get(&gtk::gdk::SELECTION_CLIPBOARD).wait_for_image() else {
+        return Ok(None);
+    };
+    pixbuf
+        .save_to_bufferv("png", &[])
+        .map(Some)
+        .map_err(|_| "Could not read the clipboard image".to_owned())
+}
+
+#[cfg(not(target_os = "linux"))]
+fn read_clipboard_image() -> Result<Option<Vec<u8>>, String> {
+    let mut clipboard =
+        arboard::Clipboard::new().map_err(|_| "Clipboard is unavailable".to_owned())?;
+    let image = match clipboard.get_image() {
+        Ok(image) => image,
+        Err(arboard::Error::ContentNotAvailable) => return Ok(None),
+        Err(_) => return Err("Could not read the clipboard image".to_owned()),
+    };
+    let width =
+        u32::try_from(image.width).map_err(|_| "Clipboard image is out of range".to_owned())?;
+    let height =
+        u32::try_from(image.height).map_err(|_| "Clipboard image is out of range".to_owned())?;
+    let expected = u64::from(width)
+        .checked_mul(u64::from(height))
+        .and_then(|pixels| pixels.checked_mul(4))
+        .and_then(|bytes| usize::try_from(bytes).ok())
+        .unwrap_or(usize::MAX);
+    if image.bytes.len() != expected {
+        return Err("Clipboard image is out of range".to_owned());
+    }
+    let rgba = RgbaImage::from_raw(width, height, image.bytes.into_owned())
+        .ok_or_else(|| "Clipboard image is out of range".to_owned())?;
+    let payload = normalize_rgba_image(rgba)?;
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(payload.data)
+        .map_err(|_| "Could not encode the clipboard image".to_owned())?;
+    Ok(Some(bytes))
+}
+
+#[cfg(target_os = "linux")]
+fn write_clipboard_text(text: String) -> Result<(), String> {
+    gtk::init().map_err(|_| "Clipboard is unavailable".to_owned())?;
+    gtk::Clipboard::get(&gtk::gdk::SELECTION_CLIPBOARD).set_text(&text);
+    Ok(())
+}
+
+#[cfg(not(target_os = "linux"))]
+fn write_clipboard_text(text: String) -> Result<(), String> {
+    arboard::Clipboard::new()
+        .map_err(|_| "Clipboard is unavailable".to_owned())?
+        .set_text(text)
+        .map_err(|_| "Clipboard is unavailable".to_owned())
+}
+
+fn copy_answer(answer: String, ui: Weak<FindOutWindow>) {
+    let result = write_clipboard_text(answer);
+    if let Some(ui) = ui.upgrade() {
+        if let Err(error) = result {
+            ui.set_status(error.into());
+        } else {
+            ui.set_status("Copied".into());
+        }
+    }
+}
+
+fn popup_shortcut() -> HotKey {
+    let modifiers = if cfg!(windows) {
+        Modifiers::ALT
+    } else {
+        Modifiers::SUPER
+    };
+    HotKey::new(Some(modifiers), Code::Space)
+}
+
+#[derive(Clone, Copy, Debug)]
+struct PopupGeometry {
+    cursor_x: i32,
+    cursor_y: i32,
+    work_x: i32,
+    work_y: i32,
+    work_width: i32,
+    work_height: i32,
+    scale_factor: f32,
+}
+
+fn popup_position(geometry: PopupGeometry, width: i32, height: i32) -> slint::PhysicalPosition {
+    let max_x = geometry.work_x + (geometry.work_width - width).max(0);
+    let max_y = geometry.work_y + (geometry.work_height - height).max(0);
+    slint::PhysicalPosition::new(
+        (geometry.cursor_x - width / 2).clamp(geometry.work_x, max_x),
+        (geometry.cursor_y - height / 2).clamp(geometry.work_y, max_y),
+    )
+}
+
+#[cfg(target_os = "linux")]
+fn popup_geometry() -> Option<PopupGeometry> {
+    use gtk::prelude::*;
+
+    gtk::init().ok()?;
+    let display = gtk::gdk::Display::default()?;
+    let pointer = display.default_seat()?.pointer()?;
+    let (_, cursor_x, cursor_y) = pointer.position();
+    let monitor = display.monitor_at_point(cursor_x, cursor_y)?;
+    let workarea = monitor.workarea();
+    Some(PopupGeometry {
+        cursor_x,
+        cursor_y,
+        work_x: workarea.x(),
+        work_y: workarea.y(),
+        work_width: workarea.width(),
+        work_height: workarea.height(),
+        scale_factor: monitor.scale_factor() as f32,
+    })
+}
+
+#[cfg(target_os = "windows")]
+fn popup_geometry() -> Option<PopupGeometry> {
+    use std::mem::size_of;
+    use windows_sys::Win32::Foundation::POINT;
+    use windows_sys::Win32::Graphics::Gdi::{
+        GetMonitorInfoW, MonitorFromPoint, MONITORINFO, MONITOR_DEFAULTTONEAREST,
+    };
+    use windows_sys::Win32::UI::WindowsAndMessaging::GetCursorPos;
+
+    let mut point = POINT::default();
+    if unsafe { GetCursorPos(&mut point) } == 0 {
+        return None;
+    }
+    let monitor = unsafe { MonitorFromPoint(point, MONITOR_DEFAULTTONEAREST) };
+    if monitor.is_null() {
+        return None;
+    }
+    let mut info = MONITORINFO {
+        cbSize: size_of::<MONITORINFO>() as u32,
+        ..Default::default()
+    };
+    if unsafe { GetMonitorInfoW(monitor, &mut info) } == 0 {
+        return None;
+    }
+    let workarea = info.rcWork;
+    Some(PopupGeometry {
+        cursor_x: point.x,
+        cursor_y: point.y,
+        work_x: workarea.left,
+        work_y: workarea.top,
+        work_width: workarea.right - workarea.left,
+        work_height: workarea.bottom - workarea.top,
+        scale_factor: 1.0,
+    })
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "windows")))]
+fn popup_geometry() -> Option<PopupGeometry> {
+    None
+}
+
+fn popup_size(ui: &FindOutWindow, scale_factor: f32) -> (i32, i32) {
+    let size = ui.window().size();
+    if size.width > 0 && size.height > 0 {
+        (size.width as i32, size.height as i32)
+    } else {
+        let scale_factor = scale_factor.clamp(1.0, 4.0);
+        (
+            (POPUP_WIDTH as f32 * scale_factor).round() as i32,
+            (POPUP_HEIGHT as f32 * scale_factor).round() as i32,
+        )
+    }
+}
+
+fn place_popup(ui: &FindOutWindow) {
+    if let Some(geometry) = popup_geometry() {
+        let (width, height) = popup_size(ui, geometry.scale_factor);
+        ui.window()
+            .set_position(popup_position(geometry, width, height));
+    }
+}
+
+fn next_generation(generation: &Arc<Mutex<u64>>) -> u64 {
+    let mut value = generation
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    *value = value.wrapping_add(1);
+    *value
+}
+
+fn is_current_generation(generation: &Arc<Mutex<u64>>, expected: u64) -> bool {
+    generation
+        .lock()
+        .map(|value| *value == expected)
+        .unwrap_or(false)
+}
+
+fn show_window(ui: &FindOutWindow, generation: &Arc<Mutex<u64>>, focused: &Arc<AtomicBool>) {
+    focused.store(false, Ordering::Release);
+    next_generation(generation);
+    place_popup(ui);
+    let _ = ui.show();
+    place_popup(ui);
+    ui.window()
+        .with_winit_window(|window| window.focus_window());
+    if !ui.get_activated() && ui.get_status().is_empty() {
+        ui.set_status("Activation required".into());
+    }
+}
+
+fn hide_window(
+    ui: &FindOutWindow,
+    attached_image: &Arc<Mutex<Option<ImagePayload>>>,
+    last_query: &Arc<Mutex<String>>,
+    generation: &Arc<Mutex<u64>>,
+    request_generation: &Arc<Mutex<u64>>,
+    focused: &Arc<AtomicBool>,
+) {
+    focused.store(false, Ordering::Release);
+    if !ui.window().is_visible() {
+        return;
+    }
+    let hide_generation = next_generation(generation);
+    ui.set_activation_key("".into());
+    let _ = ui.hide();
+
+    let ui = ui.as_weak();
+    let attached_image = attached_image.clone();
+    let last_query = last_query.clone();
+    let generation = generation.clone();
+    let request_generation = request_generation.clone();
+    Timer::single_shot(HIDE_GRACE, move || {
+        if !is_current_generation(&generation, hide_generation) {
+            return;
+        }
+        next_generation(&request_generation);
+        if let Some(ui) = ui.upgrade() {
+            if ui.window().is_visible() {
+                return;
+            }
+            ui.set_busy(false);
+            ui.set_has_image(false);
+            ui.set_can_force_search(false);
+            ui.set_answer("".into());
+            ui.set_roundtrip("".into());
+            ui.set_question("".into());
+            ui.set_activation_key("".into());
+            ui.set_status("".into());
+        }
+        if let Ok(mut image) = attached_image.lock() {
+            *image = None;
+        }
+        if let Ok(mut query) = last_query.lock() {
+            query.clear();
+        }
+    });
+}
+
+#[cfg(target_os = "linux")]
+fn wait_for_tray_host() -> Result<(), String> {
+    use gtk::{gio, glib::variant::ToVariant};
+    let connection = gio::bus_get_sync(gio::BusType::Session, gio::Cancellable::NONE)
+        .map_err(|error| error.to_string())?;
+    for _ in 0..30 {
+        let ready = connection
+            .call_sync(
+                Some("org.kde.StatusNotifierWatcher"),
+                "/StatusNotifierWatcher",
+                "org.freedesktop.DBus.Properties",
+                "Get",
+                Some(
+                    &(
+                        "org.kde.StatusNotifierWatcher",
+                        "IsStatusNotifierHostRegistered",
+                    )
+                        .to_variant(),
+                ),
+                None,
+                gio::DBusCallFlags::NO_AUTO_START,
+                500,
+                gio::Cancellable::NONE,
+            )
+            .ok()
+            .and_then(|reply| reply.get::<(gtk::glib::Variant,)>())
+            .and_then(|(value,)| value.get::<bool>())
+            .unwrap_or(false);
+        if ready {
+            return Ok(());
+        }
+        std::thread::sleep(Duration::from_secs(1));
+    }
+    Err("No desktop tray host became ready; enable a StatusNotifier/AppIndicator tray host and restart FindOut".into())
+}
+
+fn create_tray(
+    ui: &FindOutWindow,
+    generation: &Arc<Mutex<u64>>,
+    focused: &Arc<AtomicBool>,
+) -> Option<FindOutTray> {
+    let tray = match FindOutTray::new() {
+        Ok(tray) => {
+            if let Err(error) = tray.show() {
+                eprintln!("FindOut tray unavailable: {error}");
+            }
+            Some(tray)
+        }
+        Err(error) => {
+            eprintln!("FindOut tray unavailable: {error}");
+            None
+        }
+    };
+    if let Some(tray) = tray.as_ref() {
+        tray.set_theme(ui.get_theme());
+        tray.on_show_window({
+            let ui = ui.as_weak();
+            let generation = generation.clone();
+            let focused = focused.clone();
+            move || {
+                if let Some(ui) = ui.upgrade() {
+                    show_window(&ui, &generation, &focused);
+                }
+            }
+        });
+        tray.on_select_theme({
+            let ui = ui.as_weak();
+            let tray = tray.as_weak();
+            move |theme| {
+                let theme = match theme {
+                    THEME_LIGHT | THEME_DARK | THEME_RETRO => theme,
+                    _ => THEME_RETRO,
+                };
+                if let Some(ui) = ui.upgrade() {
+                    ui.set_theme(theme);
+                }
+                if let Some(tray) = tray.upgrade() {
+                    tray.set_theme(theme);
+                }
+            }
+        });
+        tray.on_quit(|| {
+            let _ = slint::quit_event_loop();
+        });
+    }
+    // Slint initializes trays on the next event-loop tick, including while hidden.
+    Timer::single_shot(Duration::ZERO, || {});
+    tray
+}
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let origin = api_origin()?;
+    slint::BackendSelector::new()
+        .backend_name("winit-software".into())
+        .with_winit_window_attributes_hook(|mut attributes| {
+            #[cfg(target_os = "linux")]
+            {
+                use slint::winit_030::winit::platform::x11::{WindowAttributesExtX11, WindowType};
+                // ponytail: X11 has no portable shadow-off hint; Utility keeps focus and
+                // lets common WMs apply SKIP_TASKBAR without override-redirect.
+                attributes = attributes.with_x11_window_type(vec![WindowType::Utility]);
+            }
+            #[cfg(target_os = "windows")]
+            {
+                use slint::winit_030::winit::platform::windows::WindowAttributesExtWindows;
+                attributes = attributes
+                    .with_skip_taskbar(true)
+                    .with_undecorated_shadow(false);
+            }
+            attributes
+        })
+        .select()?;
+
+    let manager = GlobalHotKeyManager::new()?;
+    let hotkey = popup_shortcut();
+    manager.register(hotkey)?;
+
+    let ui = FindOutWindow::new()?;
+    ui.set_dev_metrics(cfg!(feature = "dev-metrics"));
+    let activated = matches!(token(), Ok(Some(_)));
+    ui.set_activated(activated);
+    if !activated {
+        ui.set_status("Activation required".into());
+    }
+    ui.hide()?;
+    start_update_check(ui.as_weak());
+
+    let attached_image = Arc::new(Mutex::new(None::<ImagePayload>));
+    let last_query = Arc::new(Mutex::new(String::new()));
+    let generation = Arc::new(Mutex::new(0_u64));
+    let request_generation = Arc::new(Mutex::new(0_u64));
+    let focused = Arc::new(AtomicBool::new(false));
+    ui.on_activate({
+        let origin = origin.clone();
+        let ui = ui.as_weak();
+        move |key: slint::SharedString| {
+            if validate_activation_key(&key).is_err() {
+                if let Some(ui) = ui.upgrade() {
+                    ui.set_status("Activation key must be 8–256 characters".into());
+                }
+                return;
+            }
+            if let Some(ui) = ui.upgrade() {
+                ui.set_busy(true);
+                ui.set_status("Activating…".into());
+            }
+            activate(origin.clone(), key.to_string(), ui.clone());
+        }
+    });
+
+    ui.on_submit({
+        let origin = origin.clone();
+        let ui = ui.as_weak();
+        let attached_image = attached_image.clone();
+        let last_query = last_query.clone();
+        let request_state = request_generation.clone();
+        move |text, force_search| {
+            let query_text = if force_search {
+                last_query
+                    .lock()
+                    .ok()
+                    .map(|query| query.clone())
+                    .unwrap_or_default()
+            } else {
+                text.trim().to_owned()
+            };
+            if query_text.is_empty() {
+                if let Some(ui) = ui.upgrade() {
+                    ui.set_status("Enter a question".into());
+                }
+                return;
+            }
+            let started = Instant::now();
+            let request_id = next_generation(&request_state);
+            if !force_search {
+                if let Ok(mut last) = last_query.lock() {
+                    *last = query_text.clone();
+                }
+            }
+            let image = attached_image
+                .lock()
+                .ok()
+                .and_then(|mut image| image.take());
+            if let Some(ui) = ui.upgrade() {
+                ui.set_busy(true);
+                ui.set_answer("".into());
+                ui.set_roundtrip("".into());
+                ui.set_can_force_search(false);
+                ui.set_has_image(false);
+                ui.set_status(
+                    if force_search {
+                        "Searching…"
+                    } else {
+                        "Finding out…"
+                    }
+                    .into(),
+                );
+            }
+            query(
+                origin.clone(),
+                query_text,
+                force_search,
+                image,
+                ui.clone(),
+                request_state.clone(),
+                request_id,
+                started,
+            );
+        }
+    });
+
+    ui.on_paste_image({
+        let ui = ui.as_weak();
+        let attached_image = attached_image.clone();
+        move || match read_clipboard_image() {
+            Ok(Some(bytes)) => match normalize_image_bytes("image/png", &bytes) {
+                Ok(payload) => {
+                    if let Ok(mut image) = attached_image.lock() {
+                        *image = Some(payload);
+                    }
+                    if let Some(ui) = ui.upgrade() {
+                        ui.set_has_image(true);
+                        ui.set_status("Image attached — describe what to do with it".into());
+                    }
+                }
+                Err(error) => {
+                    if let Some(ui) = ui.upgrade() {
+                        ui.set_status(error.into());
+                    }
+                }
+            },
+            Ok(None) => {
+                if let Some(ui) = ui.upgrade() {
+                    ui.set_status("No image on the clipboard".into());
+                }
+            }
+            Err(error) => {
+                if let Some(ui) = ui.upgrade() {
+                    ui.set_status(error.into());
+                }
+            }
+        }
+    });
+
+    ui.on_clear_image({
+        let attached_image = attached_image.clone();
+        let ui = ui.as_weak();
+        move || {
+            if let Ok(mut image) = attached_image.lock() {
+                *image = None;
+            }
+            if let Some(ui) = ui.upgrade() {
+                ui.set_has_image(false);
+                ui.set_status("Image removed".into());
+            }
+        }
+    });
+
+    ui.on_copy_answer({
+        let ui = ui.as_weak();
+        move || {
+            let answer = ui
+                .upgrade()
+                .map(|ui| ui.get_answer().to_string())
+                .unwrap_or_default();
+            copy_answer(answer, ui.clone());
+        }
+    });
+
+    ui.on_open_releases({
+        let ui = ui.as_weak();
+        move || {
+            if let Err(error) = open_releases_page() {
+                if let Some(ui) = ui.upgrade() {
+                    ui.set_status(error.into());
+                }
+            }
+        }
+    });
+
+    ui.on_escape({
+        let ui = ui.as_weak();
+        let attached_image = attached_image.clone();
+        let last_query = last_query.clone();
+        let generation = generation.clone();
+        let request_generation = request_generation.clone();
+        let focused = focused.clone();
+        move || {
+            if let Some(ui) = ui.upgrade() {
+                hide_window(
+                    &ui,
+                    &attached_image,
+                    &last_query,
+                    &generation,
+                    &request_generation,
+                    &focused,
+                );
+            }
+        }
+    });
+
+    ui.window().on_close_requested({
+        let ui = ui.as_weak();
+        let attached_image = attached_image.clone();
+        let last_query = last_query.clone();
+        let generation = generation.clone();
+        let request_generation = request_generation.clone();
+        let focused = focused.clone();
+        move || {
+            if let Some(ui) = ui.upgrade() {
+                hide_window(
+                    &ui,
+                    &attached_image,
+                    &last_query,
+                    &generation,
+                    &request_generation,
+                    &focused,
+                );
+            }
+            CloseRequestResponse::KeepWindowShown
+        }
+    });
+
+    ui.window().on_winit_window_event({
+        let ui = ui.as_weak();
+        let attached_image = attached_image.clone();
+        let last_query = last_query.clone();
+        let generation = generation.clone();
+        let request_generation = request_generation.clone();
+        let focused = focused.clone();
+        move |_window, event| {
+            if matches!(event, winit::event::WindowEvent::Focused(true)) {
+                focused.store(true, Ordering::Release);
+            } else if matches!(event, winit::event::WindowEvent::Focused(false)) {
+                focused.store(false, Ordering::Release);
+                let event_generation = generation.lock().map(|value| *value).unwrap_or_default();
+                let ui = ui.clone();
+                let attached_image = attached_image.clone();
+                let last_query = last_query.clone();
+                let generation = generation.clone();
+                let request_generation = request_generation.clone();
+                let focused = focused.clone();
+                Timer::single_shot(FOCUS_LOSS_DEBOUNCE, move || {
+                    if focused.load(Ordering::Acquire)
+                        || !is_current_generation(&generation, event_generation)
+                    {
+                        return;
+                    }
+                    if let Some(ui) = ui.upgrade() {
+                        hide_window(
+                            &ui,
+                            &attached_image,
+                            &last_query,
+                            &generation,
+                            &request_generation,
+                            &focused,
+                        );
+                    }
+                });
+            }
+            EventResult::Propagate
+        }
+    });
+
+    let tray = std::rc::Rc::new(std::cell::RefCell::new(None));
+    let install_tray = {
+        let tray = tray.clone();
+        let ui = ui.as_weak();
+        let generation = generation.clone();
+        let focused = focused.clone();
+        move || {
+            if let Some(ui) = ui.upgrade() {
+                *tray.borrow_mut() = create_tray(&ui, &generation, &focused);
+            }
+        }
+    };
+    ui.on_setup_tray(install_tray);
+    #[cfg(target_os = "linux")]
+    {
+        // Slint does not retry if its first tray creation precedes the panel at login.
+        let ui = ui.as_weak();
+        std::thread::spawn(move || match wait_for_tray_host() {
+            Ok(()) => {
+                let _ = ui.upgrade_in_event_loop(|ui| ui.invoke_setup_tray());
+            }
+            Err(error) => eprintln!("FindOut tray unavailable: {error}"),
+        });
+    }
+    #[cfg(not(target_os = "linux"))]
+    ui.invoke_setup_tray();
+
+    let toggle_ui = ui.as_weak();
+    let toggle_attached_image = attached_image.clone();
+    let toggle_last_query = last_query.clone();
+    let toggle_generation = generation.clone();
+    let toggle_request_generation = request_generation.clone();
+    let toggle_focused = focused.clone();
+    std::thread::spawn(move || {
+        for event in GlobalHotKeyEvent::receiver() {
+            if event.state == HotKeyState::Pressed && event.id == hotkey.id() {
+                let toggle_ui = toggle_ui.clone();
+                let attached_image = toggle_attached_image.clone();
+                let last_query = toggle_last_query.clone();
+                let generation = toggle_generation.clone();
+                let request_generation = toggle_request_generation.clone();
+                let focused = toggle_focused.clone();
+                let _ = slint::invoke_from_event_loop(move || {
+                    if let Some(ui) = toggle_ui.upgrade() {
+                        if ui.window().is_visible() {
+                            hide_window(
+                                &ui,
+                                &attached_image,
+                                &last_query,
+                                &generation,
+                                &request_generation,
+                                &focused,
+                            );
+                        } else {
+                            show_window(&ui, &generation, &focused);
+                        }
+                    }
+                });
+            }
+        }
+    });
+
+    slint::run_event_loop_until_quit()?;
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use image::GenericImageView;
+
+    // Run only in a disposable display:
+    // dbus-run-session -- xvfb-run -a cargo test scrolling_ui -- --ignored
+    #[cfg(target_os = "linux")]
+    #[test]
+    #[ignore = "requires an isolated X11 display"]
+    fn scrolling_ui() {
+        use slint::platform::{Key, PointerEventButton, WindowEvent};
+        use winit::platform::x11::EventLoopBuilderExtX11;
+
+        let mut event_loop =
+            winit::event_loop::EventLoop::<slint::winit_030::SlintEvent>::with_user_event();
+        event_loop.with_x11().with_any_thread(true);
+        slint::BackendSelector::new()
+            .backend_name("winit-software".into())
+            .with_winit_event_loop_builder(event_loop)
+            .select()
+            .unwrap();
+        let ui = FindOutWindow::new().unwrap();
+        ui.set_activated(true);
+        ui.set_dev_metrics(cfg!(feature = "dev-metrics"));
+        ui.set_roundtrip("RT 1.2 s".into());
+        ui.set_answer(
+            (0..50)
+                .map(|n| format!("Line {n}: a long answer worth reading.\n"))
+                .collect::<String>()
+                .into(),
+        );
+        ui.show().unwrap();
+        let window = ui.window();
+        let region = |x: u32, y: u32, width: u32, height: u32| {
+            let snapshot = window.take_snapshot().unwrap();
+            (y..y + height)
+                .flat_map(|row| {
+                    let start = ((row * snapshot.width() + x) * 4) as usize;
+                    snapshot.as_bytes()[start..start + width as usize * 4].to_vec()
+                })
+                .collect::<Vec<_>>()
+        };
+        let click = |x, y| {
+            let position = slint::LogicalPosition::new(x, y);
+            window.dispatch_event(WindowEvent::PointerPressed {
+                position,
+                button: PointerEventButton::Left,
+            });
+            window.dispatch_event(WindowEvent::PointerReleased {
+                position,
+                button: PointerEventButton::Left,
+            });
+        };
+        let key = |text: slint::SharedString| {
+            window.dispatch_event(WindowEvent::KeyPressed { text: text.clone() });
+            window.dispatch_event(WindowEvent::KeyReleased { text });
+        };
+        // Typing at the end must change the visible field, without touching the buttons.
+        click(80., 80.);
+        let buttons = region(435, 70, 100, 30);
+        key("a long question with lots of words ".repeat(15).into());
+        let before_typing = region(34, 72, 390, 25);
+        key("VISIBLE END".into());
+        assert!(
+            before_typing != region(34, 72, 390, 25),
+            "typing must stay visible"
+        );
+        assert!(
+            buttons == region(435, 70, 100, 30),
+            "text must not overlap buttons"
+        );
+        let end = region(34, 72, 390, 25);
+        key(Key::Home.into());
+        assert!(
+            end != region(34, 72, 390, 25),
+            "Home must scroll to the start"
+        );
+        // Selecting a visible line must not move the answer under the pointer.
+        let lower_lines = region(34, 175, 470, 60);
+        click(80., 150.);
+        assert!(
+            lower_lines == region(34, 175, 470, 60),
+            "visible text must not jump on click"
+        );
+        // Wheel and keyboard navigation must reach later parts of a long answer.
+        let top = region(34, 130, 470, 110);
+        window.dispatch_event(WindowEvent::PointerScrolled {
+            position: slint::LogicalPosition::new(100., 170.),
+            delta_x: 0.,
+            delta_y: -200.,
+        });
+        assert!(
+            top != region(34, 130, 470, 110),
+            "wheel must scroll the answer"
+        );
+        click(80., 160.);
+        let before_page = region(34, 130, 470, 110);
+        key(Key::PageDown.into());
+        assert!(
+            before_page != region(34, 130, 470, 110),
+            "PageDown must scroll the answer"
+        );
+        ui.hide().unwrap();
+    }
+
+    #[test]
+    fn validates_contract_limits() {
+        assert!(validate_activation_key("short").is_err());
+        assert!(validate_activation_key(" activation-key ").is_ok());
+        assert!(validate_query("  ").is_err());
+        assert!(validate_query(&"a".repeat(MAX_QUERY_CHARS)).is_ok());
+        assert!(validate_query(&"a".repeat(MAX_QUERY_CHARS + 1)).is_err());
+        assert!(validate_image_dimensions(16_385, 1).is_err());
+        assert!(validate_image_dimensions(10_000, 10_000).is_err());
+    }
+
+    #[test]
+    fn compares_release_versions() {
+        assert!(is_newer_version("v0.2.0", "0.1.0"));
+        assert!(is_newer_version("0.1.1", "0.1.0"));
+        assert!(is_newer_version("v0.10.0", "0.9.0"));
+        assert!(!is_newer_version("v0.1.0", "0.1.0"));
+        assert!(!is_newer_version("v0.0.9", "0.1.0"));
+        assert!(!is_newer_version("latest", "0.1.0"));
+    }
+
+    #[test]
+    fn normalizes_small_and_large_images() {
+        let small = RgbaImage::from_pixel(2, 1, Rgba([255, 0, 0, 255]));
+        let padded = normalize_rgba_image(small).unwrap();
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(padded.data)
+            .unwrap();
+        let decoded = image::load_from_memory(&bytes).unwrap().to_rgba8();
+        assert_eq!(decoded.dimensions(), (CANVAS_WIDTH, CANVAS_HEIGHT));
+        assert_eq!(decoded.get_pixel(0, 0).0, CANVAS_BG);
+
+        let wide = RgbaImage::from_pixel(4_097, 1, Rgba([0, 255, 0, 255]));
+        let resized = normalize_rgba_image(wide).unwrap();
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(resized.data)
+            .unwrap();
+        assert_eq!(
+            image::load_from_memory(&bytes).unwrap().dimensions(),
+            (MAX_IMAGE_DIMENSION, 1)
+        );
+    }
+
+    #[test]
+    fn keeps_popup_inside_workarea() {
+        let geometry = PopupGeometry {
+            cursor_x: 1_910,
+            cursor_y: 1_070,
+            work_x: 0,
+            work_y: 0,
+            work_width: 1_920,
+            work_height: 1_080,
+            scale_factor: 1.0,
+        };
+        let position = popup_position(geometry, POPUP_WIDTH, POPUP_HEIGHT);
+        assert_eq!(position, slint::PhysicalPosition::new(1_360, 760));
+    }
+
+    #[test]
+    fn dev_metrics_are_single_line_csv_and_readable_at_a_glance() {
+        assert_eq!(csv_field("a,\"b\"\nc"), "\"a,\"\"b\"\"\\nc\"");
+        assert_eq!(format_roundtrip(Duration::from_millis(812)), "RT 812 ms");
+        assert_eq!(format_roundtrip(Duration::from_millis(1_250)), "RT 1.2 s");
+    }
+}
