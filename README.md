@@ -30,8 +30,7 @@ FINDOUT_API_ORIGIN=https://api.example.com cargo build --release
 $env:FINDOUT_API_ORIGIN="https://api.example.com"; cargo build --release
 ```
 
-For opt-in local latency/content logging, build the separate development
-variant:
+For opt-in local latency logging, build the separate development variant:
 
 ```sh
 FINDOUT_API_ORIGIN=https://findout-backend-staging.vercel.app \
@@ -42,11 +41,9 @@ It shows the last end-to-end round-trip time in the answer footer and appends
 one CSV row per query to `$XDG_STATE_HOME/findout/dev-metrics.csv` (normally
 `~/.local/state/findout/dev-metrics.csv`). Windows uses
 `%LOCALAPPDATA%\\FindOut\\dev-metrics.csv`. Columns are timestamp, round-trip
-milliseconds, outcome, search/force-search/image flags, request, and response.
-Newlines are escaped so every request stays on one physical row. The file is
-local-only and contains full questions and answers; it never contains images,
-activation keys, or device tokens. Normal builds neither show nor write
-metrics.
+milliseconds, outcome, and search/force-search/image flags. The file never
+contains questions, answers, images, activation keys, device identifiers, or
+tokens. Normal builds neither show nor write metrics.
 
 ## Updates and releases
 
@@ -82,7 +79,7 @@ privately.
   compositor shadow is controlled by the desktop.
 - A native tray icon keeps the hidden client reachable. Its menu selects the
   Light, Dark, or Retro palette; Retro is the default for now.
-- Activation UI with strict key/token validation and OS keychain storage.
+- Activation UI with issued-key support, free-trial enrollment, and OS keychain storage.
 - Text queries with cursor-following horizontal scrolling, optional forced web
   search, and selectable, scrollable answers with copying.
 - Clipboard image paste. PNG/JPEG inputs are checked before decode, rejected
@@ -139,6 +136,19 @@ X-FindOut-Protocol: 1
 
 {"activation_key":"..."}
 ```
+
+Entering `trial` instead sends an app-specific, stable device identifier derived
+locally from the platform machine identity (or a persisted random fallback):
+
+```json
+{"activation_key":"trial","device_id":"<64 lowercase hex characters>"}
+```
+
+Raw machine identifiers never leave the device. Tokens are scoped to the
+configured backend origin. Trial query responses may include server-controlled
+`X-FindOut-Daily-Limit`, `X-FindOut-Daily-Remaining`, and
+`X-FindOut-Daily-Reset` headers, which the client displays without enforcing a
+local counter.
 
 ```http
 POST /v1/query

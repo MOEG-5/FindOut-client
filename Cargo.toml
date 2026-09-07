@@ -1,6 +1,6 @@
 [package]
 name = "findout-client"
-version = "0.1.1"
+version = "0.1.2"
 edition = "2021"
 license = "GPL-3.0-only"
 description = "Minimal native desktop client for FindOut"
@@ -26,6 +26,10 @@ base64 = "0.22"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
 keyring = "4"
 url = "2"
+hmac = "0.13"
+sha2 = "0.11"
+getrandom = "0.3"
+chrono = { version = "0.4", default-features = false, features = ["std"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 gtk = "0.18"
@@ -36,6 +40,7 @@ os_info = "3"
 windows-sys = { version = "0.61", features = [
     "Win32_Foundation",
     "Win32_Graphics_Gdi",
+    "Win32_System_Registry",
     "Win32_UI_WindowsAndMessaging",
 ] }
 

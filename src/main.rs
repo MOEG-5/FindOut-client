@@ -1,11 +1,17 @@
-#![cfg_attr(all(target_os = "windows", not(debug_assertions)), windows_subsystem = "windows")]
+#![cfg_attr(
+    all(target_os = "windows", not(debug_assertions)),
+    windows_subsystem = "windows"
+)]
 
 use base64::Engine as _;
+use chrono::DateTime;
 use global_hotkey::hotkey::{Code, HotKey, Modifiers};
 use global_hotkey::{GlobalHotKeyEvent, GlobalHotKeyManager, HotKeyState};
+use hmac::{Hmac, KeyInit, Mac};
 use image::{imageops, DynamicImage, ImageFormat, ImageReader, Rgba, RgbaImage};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
+use sha2::Sha256;
 use slint::winit_030::{winit, EventResult, WinitWindowAccessor};
 use slint::{CloseRequestResponse, ComponentHandle, Timer, Weak};
 #[cfg(feature = "dev-metrics")]
@@ -22,11 +28,13 @@ use std::time::{Duration, Instant};
 const CURRENT_VERSION: &str = env!("CARGO_PKG_VERSION");
 const PROTOCOL_VERSION: &str = "1";
 const KEYRING_SERVICE: &str = "app.findout.client";
-const KEYRING_USER: &str = "installation";
+const TOKEN_KEYRING_USER: &str = "installation";
+const TRIAL_DEVICE_KEYRING_USER: &str = "trial-device-v1";
+const TRIAL_DEVICE_MESSAGE: &[u8] = b"findout/trial/device/v1";
 const MAX_QUERY_CHARS: usize = 4_000;
 // Fits one base64-encoded image plus JSON below Vercel's 4.5 MB request limit.
 const MAX_IMAGE_BYTES: usize = 3_000_000;
-const MAX_IMAGE_BASE64_CHARS: usize = ((MAX_IMAGE_BYTES + 2) / 3) * 4;
+const MAX_IMAGE_BASE64_CHARS: usize = MAX_IMAGE_BYTES.div_ceil(3) * 4;
 const MAX_SOURCE_IMAGE_DIMENSION: u32 = 16_384;
 const MAX_SOURCE_IMAGE_PIXELS: u64 = 64_000_000;
 const MAX_IMAGE_DIMENSION: u32 = 4_096;
@@ -135,7 +143,7 @@ slint::slint! {
                     spacing: 9px;
 
                     Text {
-                        text: "Enter your activation key. The device token stays in your keychain.";
+                        text: "Enter trial for 20 free requests/day, or an activation key. A private app-specific device ID prevents duplicate trials; raw machine IDs stay here.";
                         color: root.muted_text;
                         font-size: 12px;
                         wrap: word-wrap;
@@ -161,7 +169,7 @@ slint::slint! {
                             input-type: password;
                             vertical-alignment: center;
                             enabled: !root.busy;
-                            accepted => { root.activate(self.text); root.activation_key = ""; }
+                            accepted => { root.activate(self.text); }
                             key-pressed(event) => {
                                 if (event.text == Key.Escape) { root.escape(); accept }
                                 reject
@@ -204,7 +212,7 @@ slint::slint! {
                                 font-size: 16px;
                                 vertical-alignment: center;
                                 enabled: !root.busy;
-                                accepted => { root.submit(self.text, false); root.question = ""; }
+                                accepted => { root.submit(self.text, false); }
                                 key-pressed(event) => {
                                     if (event.text == Key.Escape) { root.escape(); accept }
                                     if ((event.modifiers.control || event.modifiers.meta) &&
@@ -231,6 +239,7 @@ slint::slint! {
                                 vertical-alignment: center;
                             }
                             paste_area := TouchArea {
+                                enabled: !root.busy;
                                 clicked => { root.paste-image(); }
                             }
                         }
@@ -251,7 +260,7 @@ slint::slint! {
                             }
                             send_area := TouchArea {
                                 enabled: !root.busy;
-                                clicked => { root.submit(input.text, false); root.question = ""; }
+                                clicked => { root.submit(input.text, false); }
                             }
                         }
                     }
@@ -265,6 +274,7 @@ slint::slint! {
                             horizontal-stretch: 1;
                         }
                         TouchArea {
+                            enabled: !root.busy;
                             clicked => { root.clear-image(); }
                         }
                     }
@@ -439,6 +449,8 @@ struct ImagePayload {
 #[derive(Serialize)]
 struct ActivationRequest<'a> {
     activation_key: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    device_id: Option<&'a str>,
 }
 
 #[derive(Deserialize)]
@@ -472,8 +484,26 @@ struct ErrorBody {
     message: Option<String>,
 }
 
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+struct QuotaMetadata {
+    limit: u64,
+    remaining: u64,
+    reset: String,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+struct ResponseMetadata {
+    quota: Option<QuotaMetadata>,
+    retry_after: Option<u64>,
+}
+
+struct HttpResponse<T> {
+    body: T,
+    metadata: ResponseMetadata,
+}
+
 enum RequestError {
-    Http(u16, String),
+    Http(u16, String, ResponseMetadata),
     Transport,
     InvalidResponse,
 }
@@ -499,13 +529,22 @@ fn api_origin() -> Result<String, String> {
     Ok(value.trim_end_matches('/').to_owned())
 }
 
-fn entry() -> Result<keyring::Entry, String> {
-    keyring::Entry::new(KEYRING_SERVICE, KEYRING_USER)
+fn credential_entry(origin: &str, user: &str) -> Result<keyring::Entry, String> {
+    keyring::Entry::new(&format!("{KEYRING_SERVICE}:{origin}"), user)
         .map_err(|_| "System keychain is unavailable".to_owned())
 }
 
-fn token() -> Result<Option<String>, String> {
-    match entry()?.get_password() {
+fn token_entry(origin: &str) -> Result<keyring::Entry, String> {
+    credential_entry(origin, TOKEN_KEYRING_USER)
+}
+
+fn trial_device_entry() -> Result<keyring::Entry, String> {
+    keyring::Entry::new(KEYRING_SERVICE, TRIAL_DEVICE_KEYRING_USER)
+        .map_err(|_| "System keychain is unavailable".to_owned())
+}
+
+fn token(origin: &str) -> Result<Option<String>, String> {
+    match token_entry(origin)?.get_password() {
         Ok(token) => Ok(Some(token)),
         Err(keyring::Error::NoEntry) => Ok(None),
         Err(_) => Err("System keychain is locked or unavailable".to_owned()),
@@ -514,10 +553,133 @@ fn token() -> Result<Option<String>, String> {
 
 fn validate_activation_key(value: &str) -> Result<&str, String> {
     let value = value.trim();
-    if !(8..=256).contains(&value.len()) {
-        return Err("Activation key must be 8–256 characters".to_owned());
+    if !value.eq_ignore_ascii_case("trial") && !(8..=256).contains(&value.len()) {
+        return Err("Enter trial or an 8–256 character activation key".to_owned());
     }
     Ok(value)
+}
+
+fn derive_trial_device_id(machine_identity: &[u8]) -> Result<String, String> {
+    let mut hmac = Hmac::<Sha256>::new_from_slice(machine_identity)
+        .map_err(|_| "Could not derive trial device identity".to_owned())?;
+    hmac.update(TRIAL_DEVICE_MESSAGE);
+    Ok(hmac
+        .finalize()
+        .into_bytes()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect())
+}
+
+#[cfg(target_os = "linux")]
+fn platform_machine_identity() -> Option<Vec<u8>> {
+    std::fs::read_to_string("/etc/machine-id")
+        .ok()
+        .map(|value| value.trim().to_ascii_lowercase())
+        .filter(|value| value.len() == 32 && value.bytes().all(|byte| byte.is_ascii_hexdigit()))
+        .map(String::into_bytes)
+}
+
+#[cfg(target_os = "windows")]
+fn platform_machine_identity() -> Option<Vec<u8>> {
+    use windows_sys::Win32::Foundation::ERROR_SUCCESS;
+    use windows_sys::Win32::System::Registry::{RegGetValueW, HKEY_LOCAL_MACHINE, RRF_RT_REG_SZ};
+
+    let wide = |value: &str| value.encode_utf16().chain(Some(0)).collect::<Vec<_>>();
+    let subkey = wide("SOFTWARE\\Microsoft\\Cryptography");
+    let name = wide("MachineGuid");
+    let mut bytes = 0_u32;
+    if unsafe {
+        RegGetValueW(
+            HKEY_LOCAL_MACHINE,
+            subkey.as_ptr(),
+            name.as_ptr(),
+            RRF_RT_REG_SZ,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            &mut bytes,
+        )
+    } != ERROR_SUCCESS
+        || bytes < 4
+        || bytes > 512
+    {
+        return None;
+    }
+    let mut buffer = vec![0_u16; bytes.div_ceil(2) as usize];
+    if unsafe {
+        RegGetValueW(
+            HKEY_LOCAL_MACHINE,
+            subkey.as_ptr(),
+            name.as_ptr(),
+            RRF_RT_REG_SZ,
+            std::ptr::null_mut(),
+            buffer.as_mut_ptr().cast(),
+            &mut bytes,
+        )
+    } != ERROR_SUCCESS
+    {
+        return None;
+    }
+    let end = buffer
+        .iter()
+        .position(|unit| *unit == 0)
+        .unwrap_or(buffer.len());
+    String::from_utf16(&buffer[..end])
+        .ok()
+        .map(|value| value.trim().to_ascii_lowercase())
+        .filter(|value| !value.is_empty())
+        .map(String::into_bytes)
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "windows")))]
+fn platform_machine_identity() -> Option<Vec<u8>> {
+    None
+}
+
+fn trial_device_id() -> Result<String, String> {
+    let machine_id = platform_machine_identity();
+    let entry = match trial_device_entry() {
+        Ok(entry) => entry,
+        Err(_) => {
+            return machine_id
+                .as_deref()
+                .ok_or_else(|| "Stable trial device identity is unavailable".to_owned())
+                .and_then(derive_trial_device_id)
+        }
+    };
+    match entry.get_password() {
+        Ok(value)
+            if value.len() == 64
+                && value
+                    .bytes()
+                    .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)) =>
+        {
+            Ok(value)
+        }
+        Err(keyring::Error::NoEntry) => {
+            if let Some(identity) = machine_id {
+                let value = derive_trial_device_id(&identity)?;
+                let _ = entry.set_password(&value);
+                return Ok(value);
+            }
+            let mut bytes = [0_u8; 32];
+            getrandom::fill(&mut bytes)
+                .map_err(|_| "Could not create trial device identity".to_owned())?;
+            let value = bytes
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect::<String>();
+            entry.set_password(&value).map_err(|_| {
+                "Could not save trial device identity in the system keychain".to_owned()
+            })?;
+            Ok(value)
+        }
+        Ok(_) => Err("Stored trial device identity is invalid".to_owned()),
+        Err(_) => machine_id
+            .as_deref()
+            .ok_or_else(|| "Stable trial device identity is unavailable".to_owned())
+            .and_then(derive_trial_device_id),
+    }
 }
 
 fn validate_query(value: &str) -> Result<&str, String> {
@@ -635,6 +797,36 @@ fn bounded_body(response: ureq::Response) -> Result<Vec<u8>, RequestError> {
     Ok(bytes)
 }
 
+fn parse_quota_metadata(limit: &str, remaining: &str, reset: &str) -> Option<QuotaMetadata> {
+    let reset_time = DateTime::parse_from_rfc3339(reset).ok()?;
+    if reset_time.offset().local_minus_utc() != 0 {
+        return None;
+    }
+    Some(QuotaMetadata {
+        limit: limit.parse().ok()?,
+        remaining: remaining.parse().ok()?,
+        reset: reset.to_owned(),
+    })
+}
+
+fn quota_metadata(response: &ureq::Response) -> Option<QuotaMetadata> {
+    parse_quota_metadata(
+        response.header("X-FindOut-Daily-Limit")?,
+        response.header("X-FindOut-Daily-Remaining")?,
+        response.header("X-FindOut-Daily-Reset")?,
+    )
+}
+
+fn response_metadata(response: &ureq::Response) -> ResponseMetadata {
+    ResponseMetadata {
+        quota: quota_metadata(response),
+        retry_after: response
+            .header("Retry-After")
+            .and_then(|value| value.parse().ok())
+            .filter(|seconds| *seconds > 0),
+    }
+}
+
 fn response_json<T: DeserializeOwned>(response: ureq::Response) -> Result<T, RequestError> {
     let bytes = bounded_body(response)?;
     serde_json::from_slice(&bytes).map_err(|_| RequestError::InvalidResponse)
@@ -647,22 +839,32 @@ fn error_message(status: u16, response: ureq::Response) -> String {
         .and_then(|body| body.message)
         .filter(|message| !message.is_empty())
         .map(|message| message.chars().take(512).collect::<String>());
-    message.unwrap_or_else(|| match status {
+    let message = message.unwrap_or_else(|| match status {
         401 => "Activation required".to_owned(),
         413 => "Request is too large".to_owned(),
+        426 => "This FindOut version is no longer supported; update required".to_owned(),
         429 => "Too many requests; try again shortly".to_owned(),
         _ => format!("FindOut server error ({status})"),
-    })
+    });
+    message
 }
 
 fn post_json<T: DeserializeOwned>(
     request: ureq::Request,
     body: impl Serialize,
-) -> Result<T, RequestError> {
+) -> Result<HttpResponse<T>, RequestError> {
     match request.send_json(body) {
-        Ok(response) => response_json(response),
+        Ok(response) => {
+            let metadata = response_metadata(&response);
+            response_json(response).map(|body| HttpResponse { body, metadata })
+        }
         Err(ureq::Error::Status(status, response)) => {
-            Err(RequestError::Http(status, error_message(status, response)))
+            let metadata = response_metadata(&response);
+            Err(RequestError::Http(
+                status,
+                error_message(status, response),
+                metadata,
+            ))
         }
         Err(_) => Err(RequestError::Transport),
     }
@@ -670,9 +872,51 @@ fn post_json<T: DeserializeOwned>(
 
 fn request_message(error: RequestError) -> String {
     match error {
-        RequestError::Http(_, message) => message,
+        RequestError::Http(_, message, _) => message,
         RequestError::Transport => "Cannot reach the FindOut server".to_owned(),
         RequestError::InvalidResponse => "Invalid response from the FindOut server".to_owned(),
+    }
+}
+
+fn quota_reset(reset: &str) -> String {
+    DateTime::parse_from_rfc3339(reset)
+        .map(|reset| reset.format("%Y-%m-%d %H:%M UTC").to_string())
+        .unwrap_or_else(|_| reset.to_owned())
+}
+
+fn quota_status(quota: &QuotaMetadata) -> String {
+    format!(
+        "{}/{} left · reset {}",
+        quota.remaining,
+        quota.limit,
+        quota_reset(&quota.reset)
+    )
+}
+
+fn retryable_error(error: RequestError) -> String {
+    match error {
+        RequestError::Http(429, message, metadata) => metadata
+            .retry_after
+            .map(|seconds| format!("{message} · retry in {seconds}s"))
+            .unwrap_or(message),
+        error => request_message(error),
+    }
+}
+
+fn quota_error(error: RequestError) -> String {
+    match error {
+        RequestError::Http(429, _, metadata) if matches!(metadata.quota.as_ref(), Some(quota) if quota.remaining == 0) =>
+        {
+            format!(
+                "Daily limit reached · reset {}",
+                quota_reset(&metadata.quota.unwrap().reset)
+            )
+        }
+        RequestError::Http(429, message, metadata) => metadata
+            .retry_after
+            .map(|seconds| format!("{message} · retry in {seconds}s"))
+            .unwrap_or(message),
+        error => request_message(error),
     }
 }
 
@@ -766,18 +1010,6 @@ fn open_releases_page() -> Result<(), String> {
         .map_err(|_| "Could not open the FindOut releases page".to_owned())
 }
 
-#[cfg(any(feature = "dev-metrics", test))]
-fn csv_field(value: &str) -> String {
-    format!(
-        "\"{}\"",
-        value
-            .replace('\\', "\\\\")
-            .replace('\r', "\\r")
-            .replace('\n', "\\n")
-            .replace('"', "\"\"")
-    )
-}
-
 #[cfg(feature = "dev-metrics")]
 fn metrics_path() -> std::io::Result<PathBuf> {
     #[cfg(target_os = "windows")]
@@ -794,8 +1026,8 @@ fn metrics_path() -> std::io::Result<PathBuf> {
 
 #[cfg(feature = "dev-metrics")]
 fn append_metric(
-    request: &str,
-    response: &str,
+    _request: &str,
+    _response: &str,
     elapsed: Duration,
     outcome: &str,
     searched: bool,
@@ -820,7 +1052,7 @@ fn append_metric(
     if needs_header {
         writeln!(
             file,
-            "timestamp_unix_ms,roundtrip_ms,outcome,searched,force_search,had_image,request,response"
+            "timestamp_unix_ms,roundtrip_ms,outcome,searched,force_search,had_image"
         )?;
     }
     let timestamp = std::time::SystemTime::now()
@@ -829,10 +1061,8 @@ fn append_metric(
         .as_millis();
     writeln!(
         file,
-        "{timestamp},{},{outcome},{searched},{force_search},{had_image},{},{}",
-        elapsed.as_millis(),
-        csv_field(request),
-        csv_field(response)
+        "{timestamp},{},{outcome},{searched},{force_search},{had_image}",
+        elapsed.as_millis()
     )
 }
 
@@ -845,19 +1075,25 @@ fn format_roundtrip(elapsed: Duration) -> String {
     }
 }
 
-fn activate(origin: String, key: String, ui: Weak<FindOutWindow>) {
+fn activate(origin: String, key: String, ui: Weak<FindOutWindow>, in_flight: Arc<AtomicBool>) {
     std::thread::spawn(move || {
         let result = (|| -> Result<(), String> {
             let key = validate_activation_key(&key)?;
-            let body: ActivationResponse = post_json(
+            let trial_device = key
+                .eq_ignore_ascii_case("trial")
+                .then(trial_device_id)
+                .transpose()?;
+            let response: HttpResponse<ActivationResponse> = post_json(
                 agent()
                     .post(&format!("{origin}/v1/activate"))
                     .set("X-FindOut-Protocol", PROTOCOL_VERSION),
                 &ActivationRequest {
-                    activation_key: key,
+                    activation_key: if trial_device.is_some() { "trial" } else { key },
+                    device_id: trial_device.as_deref(),
                 },
             )
-            .map_err(request_message)?;
+            .map_err(retryable_error)?;
+            let body = response.body;
             if !(32..=4096).contains(&body.device_token.len())
                 || !body
                     .device_token
@@ -866,16 +1102,18 @@ fn activate(origin: String, key: String, ui: Weak<FindOutWindow>) {
             {
                 return Err("Invalid activation response".to_owned());
             }
-            entry()?
+            token_entry(&origin)?
                 .set_password(&body.device_token)
                 .map_err(|_| "Could not save activation in the system keychain".to_owned())
         })();
+        in_flight.store(false, Ordering::Release);
         let _ = slint::invoke_from_event_loop(move || {
             if let Some(ui) = ui.upgrade() {
                 ui.set_busy(false);
                 match result {
                     Ok(()) => {
                         ui.set_activated(true);
+                        ui.set_activation_key("".into());
                         ui.set_status("Activated".into());
                     }
                     Err(error) => ui.set_status(error.into()),
@@ -933,14 +1171,17 @@ fn system_context() -> String {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn query(
     origin: String,
     text: String,
     force_search: bool,
     image: Option<ImagePayload>,
+    attached_image: Arc<Mutex<Option<ImagePayload>>>,
     ui: Weak<FindOutWindow>,
     generation: Arc<Mutex<u64>>,
     request_generation: u64,
+    in_flight: Arc<AtomicBool>,
     _started: Instant,
 ) {
     std::thread::spawn(move || {
@@ -948,10 +1189,10 @@ fn query(
         let logged_request = text.clone();
         #[cfg(feature = "dev-metrics")]
         let had_image = image.is_some();
-        let result = (|| -> Result<AskResponse, String> {
+        let result = (|| -> Result<HttpResponse<AskResponse>, String> {
             let query = validate_query(&text)?.to_owned();
-            let device_token = token()?.ok_or_else(|| "Activation required".to_owned())?;
-            let response: Result<AskResponse, RequestError> = post_json(
+            let device_token = token(&origin)?.ok_or_else(|| "Activation required".to_owned())?;
+            let response: Result<HttpResponse<AskResponse>, RequestError> = post_json(
                 agent()
                     .post(&format!("{origin}/v1/query"))
                     .set("X-FindOut-Protocol", PROTOCOL_VERSION)
@@ -964,20 +1205,21 @@ fn query(
                 },
             );
             match response {
-                Err(RequestError::Http(401, _)) => {
-                    let _ = entry()?.delete_credential();
+                Err(RequestError::Http(401, _, _)) => {
+                    let _ = token_entry(&origin)?.delete_credential();
                     Err("Activation required".to_owned())
                 }
-                Err(error) => Err(request_message(error)),
+                Err(error) => Err(quota_error(error)),
                 Ok(answer) => Ok(answer),
             }
         })();
+        in_flight.store(false, Ordering::Release);
         #[cfg(feature = "dev-metrics")]
         let elapsed = _started.elapsed();
         #[cfg(feature = "dev-metrics")]
         {
             let (response, outcome, searched) = match &result {
-                Ok(answer) => (answer.answer.as_str(), "ok", answer.searched),
+                Ok(answer) => (answer.body.answer.as_str(), "ok", answer.body.searched),
                 Err(error) => (error.as_str(), "error", false),
             };
             if let Err(error) = append_metric(
@@ -1004,15 +1246,27 @@ fn query(
                 ui.set_roundtrip(roundtrip.into());
                 match result {
                     Ok(answer) => {
-                        ui.set_answer(answer.answer.into());
-                        ui.set_can_force_search(!answer.searched);
+                        if let Ok(mut image) = attached_image.lock() {
+                            *image = None;
+                        }
+                        ui.set_has_image(false);
+                        ui.set_question("".into());
+                        ui.set_answer(answer.body.answer.into());
+                        ui.set_can_force_search(!answer.body.searched);
                         ui.set_status(
-                            if answer.searched {
-                                "Searched"
-                            } else {
-                                "From knowledge"
-                            }
-                            .into(),
+                            answer
+                                .metadata
+                                .quota
+                                .as_ref()
+                                .map(quota_status)
+                                .unwrap_or_else(|| {
+                                    if answer.body.searched {
+                                        "Searched".to_owned()
+                                    } else {
+                                        "From knowledge".to_owned()
+                                    }
+                                })
+                                .into(),
                         );
                     }
                     Err(error) => {
@@ -1402,7 +1656,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let ui = FindOutWindow::new()?;
     ui.set_dev_metrics(cfg!(feature = "dev-metrics"));
-    let activated = matches!(token(), Ok(Some(_)));
+    let activated = matches!(token(&origin), Ok(Some(_)));
     ui.set_activated(activated);
     if !activated {
         ui.set_status("Activation required".into());
@@ -1415,21 +1669,32 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let generation = Arc::new(Mutex::new(0_u64));
     let request_generation = Arc::new(Mutex::new(0_u64));
     let focused = Arc::new(AtomicBool::new(false));
+    let activation_in_flight = Arc::new(AtomicBool::new(false));
+    let query_in_flight = Arc::new(AtomicBool::new(false));
     ui.on_activate({
         let origin = origin.clone();
         let ui = ui.as_weak();
+        let in_flight = activation_in_flight.clone();
         move |key: slint::SharedString| {
-            if validate_activation_key(&key).is_err() {
-                if let Some(ui) = ui.upgrade() {
-                    ui.set_status("Activation key must be 8–256 characters".into());
+            let key = match validate_activation_key(&key) {
+                Ok(key) => key.to_owned(),
+                Err(error) => {
+                    if let Some(ui) = ui.upgrade() {
+                        ui.set_status(error.into());
+                    }
+                    return;
                 }
+            };
+            if in_flight.swap(true, Ordering::AcqRel) {
                 return;
             }
-            if let Some(ui) = ui.upgrade() {
-                ui.set_busy(true);
-                ui.set_status("Activating…".into());
-            }
-            activate(origin.clone(), key.to_string(), ui.clone());
+            let Some(window) = ui.upgrade() else {
+                in_flight.store(false, Ordering::Release);
+                return;
+            };
+            window.set_busy(true);
+            window.set_status("Activating…".into());
+            activate(origin.clone(), key, ui.clone(), in_flight.clone());
         }
     });
 
@@ -1439,7 +1704,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let attached_image = attached_image.clone();
         let last_query = last_query.clone();
         let request_state = request_generation.clone();
+        let in_flight = query_in_flight.clone();
         move |text, force_search| {
+            if in_flight.swap(true, Ordering::AcqRel) {
+                return;
+            }
             let query_text = if force_search {
                 last_query
                     .lock()
@@ -1450,6 +1719,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 text.trim().to_owned()
             };
             if query_text.is_empty() {
+                in_flight.store(false, Ordering::Release);
                 if let Some(ui) = ui.upgrade() {
                     ui.set_status("Enter a question".into());
                 }
@@ -1462,16 +1732,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     *last = query_text.clone();
                 }
             }
-            let image = attached_image
-                .lock()
-                .ok()
-                .and_then(|mut image| image.take());
+            let image = attached_image.lock().ok().and_then(|image| image.clone());
             if let Some(ui) = ui.upgrade() {
                 ui.set_busy(true);
                 ui.set_answer("".into());
                 ui.set_roundtrip("".into());
                 ui.set_can_force_search(false);
-                ui.set_has_image(false);
                 ui.set_status(
                     if force_search {
                         "Searching…"
@@ -1486,9 +1752,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 query_text,
                 force_search,
                 image,
+                attached_image.clone(),
                 ui.clone(),
                 request_state.clone(),
                 request_id,
+                in_flight.clone(),
                 started,
             );
         }
@@ -1821,6 +2089,9 @@ mod tests {
 
     #[test]
     fn validates_contract_limits() {
+        assert_eq!(validate_activation_key("trial").unwrap(), "trial");
+        assert_eq!(validate_activation_key(" Trial ").unwrap(), "Trial");
+        assert_eq!(validate_activation_key("TRIAL").unwrap(), "TRIAL");
         assert!(validate_activation_key("short").is_err());
         assert!(validate_activation_key(" activation-key ").is_ok());
         assert!(validate_query("  ").is_err());
@@ -1828,6 +2099,110 @@ mod tests {
         assert!(validate_query(&"a".repeat(MAX_QUERY_CHARS + 1)).is_err());
         assert!(validate_image_dimensions(16_385, 1).is_err());
         assert!(validate_image_dimensions(10_000, 10_000).is_err());
+    }
+
+    #[test]
+    fn derives_stable_private_trial_device_ids() {
+        let first = derive_trial_device_id(b"raw-machine-identity").unwrap();
+        let second = derive_trial_device_id(b"raw-machine-identity").unwrap();
+        assert_eq!(first, second);
+        assert_eq!(first.len(), 64);
+        assert!(first
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)));
+        assert_ne!(first, derive_trial_device_id(b"another-machine").unwrap());
+    }
+
+    #[test]
+    fn serializes_device_id_only_for_trial_activation() {
+        let ordinary = serde_json::to_value(ActivationRequest {
+            activation_key: "fo_issued-key",
+            device_id: None,
+        })
+        .unwrap();
+        assert_eq!(
+            ordinary,
+            serde_json::json!({"activation_key": "fo_issued-key"})
+        );
+        let trial = serde_json::to_value(ActivationRequest {
+            activation_key: "trial",
+            device_id: Some("a"),
+        })
+        .unwrap();
+        assert_eq!(
+            trial,
+            serde_json::json!({"activation_key": "trial", "device_id": "a"})
+        );
+    }
+
+    #[test]
+    fn parses_quota_headers_case_insensitively() {
+        let response: ureq::Response = "HTTP/1.1 200 OK\r\nx-findout-daily-limit: 37\r\nX-FINDOUT-DAILY-REMAINING: 12\r\nX-FindOut-Daily-Reset: 2026-09-08T00:00:00.000Z\r\n\r\n{}"
+            .parse()
+            .unwrap();
+        assert_eq!(
+            quota_metadata(&response),
+            Some(QuotaMetadata {
+                limit: 37,
+                remaining: 12,
+                reset: "2026-09-08T00:00:00.000Z".to_owned(),
+            })
+        );
+    }
+
+    #[test]
+    fn parses_only_complete_valid_utc_quota_metadata() {
+        let reset = "2026-09-08T00:00:00.000Z";
+        assert_eq!(
+            parse_quota_metadata("37", "12", reset),
+            Some(QuotaMetadata {
+                limit: 37,
+                remaining: 12,
+                reset: reset.to_owned(),
+            })
+        );
+        assert!(parse_quota_metadata("bad", "12", reset).is_none());
+        assert!(parse_quota_metadata("37", "bad", reset).is_none());
+        assert!(parse_quota_metadata("37", "12", "tomorrow").is_none());
+        assert!(parse_quota_metadata("37", "12", "2026-09-08T01:00:00+01:00").is_none());
+    }
+
+    #[test]
+    fn formats_server_quota_without_hardcoding_the_limit() {
+        let quota = QuotaMetadata {
+            limit: 37,
+            remaining: 12,
+            reset: "2026-09-08T00:00:00.000Z".to_owned(),
+        };
+        assert_eq!(
+            quota_status(&quota),
+            "12/37 left · reset 2026-09-08 00:00 UTC"
+        );
+        assert_eq!(
+            quota_error(RequestError::Http(
+                429,
+                "ignored".to_owned(),
+                ResponseMetadata {
+                    quota: Some(QuotaMetadata {
+                        remaining: 0,
+                        ..quota
+                    }),
+                    retry_after: Some(30),
+                }
+            )),
+            "Daily limit reached · reset 2026-09-08 00:00 UTC"
+        );
+        assert_eq!(
+            quota_error(RequestError::Http(
+                429,
+                "Server busy".to_owned(),
+                ResponseMetadata {
+                    quota: None,
+                    retry_after: Some(30),
+                }
+            )),
+            "Server busy · retry in 30s"
+        );
     }
 
     #[test]
@@ -1878,8 +2253,7 @@ mod tests {
     }
 
     #[test]
-    fn dev_metrics_are_single_line_csv_and_readable_at_a_glance() {
-        assert_eq!(csv_field("a,\"b\"\nc"), "\"a,\"\"b\"\"\\nc\"");
+    fn formats_dev_roundtrip_at_a_glance() {
         assert_eq!(format_roundtrip(Duration::from_millis(812)), "RT 812 ms");
         assert_eq!(format_roundtrip(Duration::from_millis(1_250)), "RT 1.2 s");
     }
