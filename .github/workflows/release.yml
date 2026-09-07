@@ -42,6 +42,8 @@ jobs:
           test -n "${FINDOUT_API_ORIGIN}"
 
       - name: Build
+        env:
+          RUSTFLAGS: ${{ runner.os == 'Windows' && '-C target-feature=+crt-static' || '' }}
         run: cargo build --locked --release
 
       - name: Package Linux
