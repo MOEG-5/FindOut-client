@@ -1326,6 +1326,19 @@ fn read_clipboard_image() -> Result<Option<Vec<u8>>, String> {
 #[cfg(target_os = "linux")]
 fn write_clipboard_text(text: String) -> Result<(), String> {
     gtk::init().map_err(|_| "Clipboard is unavailable".to_owned())?;
+    // GTK must service paste requests while Slint runs, even with the popup hidden.
+    thread_local! {
+        static CLIPBOARD_EVENTS: Timer = {
+            let timer = Timer::default();
+            timer.start(slint::TimerMode::Repeated, Duration::from_millis(50), || {
+                while gtk::events_pending() {
+                    gtk::main_iteration_do(false);
+                }
+            });
+            timer
+        };
+    }
+    CLIPBOARD_EVENTS.with(|_| {});
     gtk::Clipboard::get(&gtk::gdk::SELECTION_CLIPBOARD).set_text(&text);
     Ok(())
 }
@@ -1985,6 +1998,41 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 mod tests {
     use super::*;
     use image::GenericImageView;
+
+    // dbus-run-session --config-file=tests/dbus-session.conf -- xvfb-run -a \
+    //   env -u WAYLAND_DISPLAY cargo test clipboard_copy -- --ignored
+    #[cfg(target_os = "linux")]
+    #[test]
+    #[ignore = "requires an isolated X11 display and xclip"]
+    fn clipboard_copy() {
+        use winit::platform::x11::EventLoopBuilderExtX11;
+
+        let mut event_loop =
+            winit::event_loop::EventLoop::<slint::winit_030::SlintEvent>::with_user_event();
+        event_loop.with_x11().with_any_thread(true);
+        slint::BackendSelector::new()
+            .backend_name("winit-software".into())
+            .with_winit_event_loop_builder(event_loop)
+            .select()
+            .unwrap();
+        let ui = FindOutWindow::new().unwrap();
+        let answer = "A copied answer.\nUnicode: ä € 🦀";
+        copy_answer(answer.to_owned(), ui.as_weak());
+        assert_eq!(ui.get_status(), "Copied");
+        // The popup is hidden, and the reader must be a separate process:
+        // GTK can satisfy an in-process read without servicing any X11 events.
+        let reader = std::thread::spawn(|| {
+            let output = Command::new("timeout")
+                .args(["5s", "xclip", "-selection", "clipboard", "-out"])
+                .output();
+            slint::quit_event_loop().unwrap();
+            output.unwrap()
+        });
+        slint::run_event_loop_until_quit().unwrap();
+        let output = reader.join().unwrap();
+        assert!(output.status.success(), "external paste failed: {output:?}");
+        assert_eq!(String::from_utf8(output.stdout).unwrap(), answer);
+    }
 
     // Run only in a disposable display:
     // dbus-run-session -- xvfb-run -a cargo test scrolling_ui -- --ignored

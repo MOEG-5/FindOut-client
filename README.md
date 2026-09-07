@@ -29,7 +29,7 @@ No API keys or separate accounts are needed.
 
 FindOut lives in your system tray and can be opened whenever you need it.
 
-> An image of FindOut in action will go here.
+<img src="docs/findout-screenshot.png" alt="FindOut in its retro theme, displaying an example answer and a follow-up question." width="560">
 
 ## For developers
 
