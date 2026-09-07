@@ -65,10 +65,11 @@ FINDOUT_GITHUB_REPOSITORY=OWNER/REPO \
   cargo build --release
 ```
 
-Trial keys stay a backend/admin operation. Do not generate or publish them from
-the client release workflow; until a private delivery channel or commerce
-provider exists, issue them from the backend admin tooling and send each key
-privately.
+Free-trial enrollment is initiated by entering `trial` in the client. Issued
+paid or private activation keys remain a backend/admin operation: do not generate
+or publish them from the client release workflow. Until a private delivery
+channel or commerce provider exists, issue those keys from the backend admin
+tooling and send each key privately.
 
 ## Client responsibilities
 
@@ -79,7 +80,8 @@ privately.
   compositor shadow is controlled by the desktop.
 - A native tray icon keeps the hidden client reachable. Its menu selects the
   Light, Dark, or Retro palette; Retro is the default for now.
-- Activation UI with issued-key support, free-trial enrollment, and OS keychain storage.
+- Activation UI with issued-key support, free-trial enrollment, and OS keychain
+  storage. Tokens are isolated by configured backend origin.
 - Text queries with cursor-following horizontal scrolling, optional forced web
   search, and selectable, scrollable answers with copying.
 - Clipboard image paste. PNG/JPEG inputs are checked before decode, rejected
