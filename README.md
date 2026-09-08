@@ -82,13 +82,36 @@ tokens. Normal builds neither show nor write metrics.
 
 ## Updates and releases
 
-Published builds check GitHub's public latest-release endpoint once at startup.
-When it finds a newer stable `vMAJOR.MINOR.PATCH` release, an `UPDATE vX.Y.Z`
-link appears in the bottom-right footer; clicking it opens the repository's
-Releases page. A failed or unavailable check stays silent.
+Published builds offer a per-user installation on first launch. “Start FindOut
+when I sign in” is selected by default and can be unchecked before installing,
+or changed later in the tray menu. “Not now” keeps the downloaded copy portable;
+the tray menu lets you install later. Development builds do not prompt.
+
+Installed builds check GitHub's public latest-release endpoint once at startup.
+Clicking `UPDATE vX.Y.Z` downloads the matching executable, checks its size and
+SHA-256 digest against GitHub's release metadata, replaces the installed binary,
+and restarts FindOut. Failed updates show an error and can be retried. Releases
+without a matching executable and digest require a manual download. After an
+update, `WHAT’S NEW` links to that version's GitHub release notes for one hour;
+restarting the client does not reset that hour.
+
+The tray menu includes **Uninstall FindOut…**, followed by a Yes/No confirmation.
+It removes the installed application, startup and application-menu shortcuts,
+local installation state, development metrics, and keychain credentials for
+backend origins recorded by this installation, plus the trial fallback identity.
+A locked keychain stops cleanup with an error so it can be retried. Uninstall
+applies to the current account; downloaded archives, other portable copies,
+server-side records, and credentials from unrecorded legacy backend origins are
+not removed.
+
+Linux installs in `$XDG_DATA_HOME/findout` (normally `~/.local/share/findout`),
+with desktop entries in the XDG applications and autostart directories. Windows
+installs in `%LOCALAPPDATA%\FindOut`, with Start Menu and optional Startup
+shortcuts. Neither platform requires administrator access. Windows uses a
+separate PowerShell process to replace or remove the executable after exit.
 
 The release workflow builds Linux x86_64 and Windows x86_64 archives when a
-`v*` tag is pushed, then publishes both files to a GitHub Release. Set the
+`v*` tag is pushed, then publishes the archives and standalone updater executables to a GitHub Release. Set the
 repository Actions variable `FINDOUT_API_ORIGIN` to the production HTTPS API
 origin before tagging. The workflow injects the repository name into the
 binary, so local builds only enable update checking when built with both

@@ -3,6 +3,8 @@
     windows_subsystem = "windows"
 )]
 
+mod lifecycle;
+
 use base64::Engine as _;
 use chrono::DateTime;
 use global_hotkey::hotkey::{Code, HotKey, Modifiers};
@@ -52,7 +54,7 @@ const THEME_DARK: i32 = 1;
 const THEME_RETRO: i32 = 2;
 
 slint::slint! {
-    import { Palette, ScrollView } from "std-widgets.slint";
+    import { Palette, ScrollView, Button, CheckBox } from "std-widgets.slint";
 
     export component FindOutWindow inherits Window {
         title: "FindOut";
@@ -397,6 +399,47 @@ slint::slint! {
 
     }
 
+    export component InstallDialog inherits Window {
+        title: "Install FindOut";
+        width: 420px;
+        height: 230px;
+        in-out property <bool> autostart: true;
+        in property <string> error: "";
+        callback install(bool);
+        callback cancel();
+        VerticalLayout {
+            padding: 24px;
+            spacing: 16px;
+            Text { text: "Keep FindOut a shortcut away"; font-size: 20px; }
+            Text { text: "Install for your account to enable automatic updates."; wrap: word-wrap; }
+            CheckBox { text: "Start FindOut when I sign in"; checked <=> root.autostart; }
+            Text { text: root.error; wrap: word-wrap; }
+            HorizontalLayout {
+                Button { text: "Not now"; clicked => { root.cancel(); } }
+                Button { text: "Install"; clicked => { root.install(root.autostart); } }
+            }
+        }
+    }
+    export component UninstallDialog inherits Window {
+        title: "Uninstall FindOut?";
+        width: 420px;
+        height: 240px;
+        in property <string> error: "";
+        callback confirm();
+        callback cancel();
+        VerticalLayout {
+            padding: 24px;
+            spacing: 16px;
+            Text { text: "Are you sure?"; font-size: 20px; }
+            Text { text: "This removes FindOut, its sign-in credentials, startup entry and local app data from this account."; wrap: word-wrap; }
+            Text { text: root.error; wrap: word-wrap; }
+            HorizontalLayout {
+                Button { text: "No, keep FindOut"; clicked => { root.cancel(); } }
+                Button { text: "Yes, uninstall"; clicked => { root.confirm(); } }
+            }
+        }
+    }
+
     export component FindOutTray inherits SystemTrayIcon {
         icon: @image-url("../assets/findout-tray.svg");
         tooltip: "FindOut";
@@ -406,6 +449,11 @@ slint::slint! {
         callback show-window();
         callback select-theme(int);
         callback quit();
+        callback install();
+        callback uninstall();
+        callback toggle-autostart();
+        in property <bool> installed: false;
+        in property <bool> autostart: false;
 
         Menu {
             MenuItem {
@@ -430,6 +478,18 @@ slint::slint! {
                 checkable: true;
                 checked: root.theme == 2;
                 activated => { root.select-theme(2); }
+            }
+            MenuSeparator { }
+            MenuItem {
+                title: root.installed ? "Start when I sign in" : "Install FindOut…";
+                checkable: root.installed;
+                checked: root.autostart;
+                activated => { if root.installed { root.toggle-autostart(); } else { root.install(); } }
+            }
+            MenuItem {
+                title: "Uninstall FindOut…";
+                enabled: root.installed;
+                activated => { root.uninstall(); }
             }
             MenuSeparator { }
             MenuItem {
@@ -474,9 +534,11 @@ struct AskResponse {
     searched: bool,
 }
 
-#[derive(Deserialize)]
+#[derive(Clone, Deserialize)]
 struct GitHubRelease {
     tag_name: String,
+    #[serde(default)]
+    assets: Vec<lifecycle::Asset>,
 }
 
 #[derive(Deserialize)]
@@ -964,7 +1026,7 @@ fn github_release_urls() -> Option<(String, String)> {
     ))
 }
 
-fn check_for_update() -> Option<String> {
+fn check_for_update() -> Option<GitHubRelease> {
     let (api_url, _) = github_release_urls()?;
     let response = agent()
         .get(&api_url)
@@ -974,26 +1036,30 @@ fn check_for_update() -> Option<String> {
         .call()
         .ok()?;
     let release: GitHubRelease = response_json(response).ok()?;
-    is_newer_version(&release.tag_name, CURRENT_VERSION)
-        .then(|| format!("UPDATE {}", release.tag_name))
+    is_newer_version(&release.tag_name, CURRENT_VERSION).then_some(release)
 }
 
-fn start_update_check(ui: Weak<FindOutWindow>) {
+fn start_update_check(ui: Weak<FindOutWindow>, available: Arc<Mutex<Option<GitHubRelease>>>) {
     std::thread::spawn(move || {
         let Some(update) = check_for_update() else {
             return;
         };
+        let label = format!("UPDATE {}", update.tag_name);
+        *available.lock().unwrap() = Some(update);
         let _ = slint::invoke_from_event_loop(move || {
             if let Some(ui) = ui.upgrade() {
-                ui.set_update_available(update.into());
+                ui.set_update_available(label.into());
             }
         });
     });
 }
 
 fn open_releases_page() -> Result<(), String> {
-    let (_, releases_url) = github_release_urls()
+    let (_, mut releases_url) = github_release_urls()
         .ok_or_else(|| "Update link is not configured for this build".to_owned())?;
+    if lifecycle::whats_new() {
+        releases_url.push_str(&format!("/tag/v{CURRENT_VERSION}"));
+    }
     #[cfg(target_os = "windows")]
     let result = Command::new("cmd")
         .args(["/C", "start", "", releases_url.as_str()])
@@ -1590,6 +1656,8 @@ fn create_tray(
     ui: &FindOutWindow,
     generation: &Arc<Mutex<u64>>,
     focused: &Arc<AtomicBool>,
+    install: Weak<InstallDialog>,
+    uninstall: Weak<UninstallDialog>,
 ) -> Option<FindOutTray> {
     let tray = match FindOutTray::new() {
         Ok(tray) => {
@@ -1604,6 +1672,35 @@ fn create_tray(
         }
     };
     if let Some(tray) = tray.as_ref() {
+        tray.set_installed(lifecycle::installed());
+        tray.set_autostart(lifecycle::autostart());
+        tray.on_install(move || {
+            if let Some(dialog) = install.upgrade() {
+                let _ = dialog.show();
+            }
+        });
+        tray.on_uninstall(move || {
+            if let Some(dialog) = uninstall.upgrade() {
+                let _ = dialog.show();
+            }
+        });
+        tray.on_toggle_autostart({
+            let tray = tray.as_weak();
+            let ui = ui.as_weak();
+            move || {
+                if let Some(tray) = tray.upgrade() {
+                    match lifecycle::set_autostart(!tray.get_autostart()) {
+                        Ok(()) => tray.set_autostart(lifecycle::autostart()),
+                        Err(e) => {
+                            if let Some(ui) = ui.upgrade() {
+                                ui.set_status(e.to_string().into());
+                                let _ = ui.show();
+                            }
+                        }
+                    }
+                }
+            }
+        });
         tray.set_theme(ui.get_theme());
         tray.on_show_window({
             let ui = ui.as_weak();
@@ -1642,6 +1739,7 @@ fn create_tray(
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let origin = api_origin()?;
+    let _instance_lock = lifecycle::instance_lock().map_err(|e| e.to_string())?;
     slint::BackendSelector::new()
         .backend_name("winit-software".into())
         .with_winit_window_attributes_hook(|mut attributes| {
@@ -1675,7 +1773,78 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         ui.set_status("Activation required".into());
     }
     ui.hide()?;
-    start_update_check(ui.as_weak());
+    let available = Arc::new(Mutex::new(None::<GitHubRelease>));
+    start_update_check(ui.as_weak(), available.clone());
+    if lifecycle::installed() {
+        lifecycle::remember_origin(&origin).map_err(|e| e.to_string())?;
+    }
+    let news_timer = Timer::default();
+    if lifecycle::whats_new() {
+        ui.set_update_available("WHAT’S NEW".into());
+        let ui = ui.as_weak();
+        news_timer.start(
+            slint::TimerMode::Repeated,
+            Duration::from_secs(15),
+            move || {
+                if !lifecycle::whats_new() {
+                    if let Some(ui) = ui.upgrade() {
+                        if ui.get_update_available() == "WHAT’S NEW" {
+                            ui.set_update_available("".into());
+                        }
+                    }
+                }
+            },
+        );
+    }
+    let install_dialog = InstallDialog::new()?;
+    install_dialog.on_cancel({
+        let d = install_dialog.as_weak();
+        move || {
+            if let Some(d) = d.upgrade() {
+                let _ = d.hide();
+            }
+        }
+    });
+    install_dialog.on_install({
+        let d = install_dialog.as_weak();
+        let origin = origin.clone();
+        move |startup| match lifecycle::install(startup, &origin) {
+            Ok(()) => {
+                let _ = slint::quit_event_loop();
+            }
+            Err(e) => {
+                if let Some(d) = d.upgrade() {
+                    d.set_error(e.to_string().into());
+                }
+            }
+        }
+    });
+    let uninstall_dialog = UninstallDialog::new()?;
+    uninstall_dialog.on_cancel({
+        let d = uninstall_dialog.as_weak();
+        move || {
+            if let Some(d) = d.upgrade() {
+                let _ = d.hide();
+            }
+        }
+    });
+    uninstall_dialog.on_confirm({
+        let d = uninstall_dialog.as_weak();
+        let origin = origin.clone();
+        move || match lifecycle::uninstall(&origin) {
+            Ok(()) => {
+                let _ = slint::quit_event_loop();
+            }
+            Err(e) => {
+                if let Some(d) = d.upgrade() {
+                    d.set_error(format!("Could not finish uninstalling: {e}").into());
+                }
+            }
+        }
+    });
+    if !cfg!(debug_assertions) && !lifecycle::installed() {
+        install_dialog.show()?;
+    }
 
     let attached_image = Arc::new(Mutex::new(None::<ImagePayload>));
     let last_query = Arc::new(Mutex::new(String::new()));
@@ -1833,10 +2002,47 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     });
 
+    let install_weak = install_dialog.as_weak();
     ui.on_open_releases({
+        let install_dialog = install_weak.clone();
         let ui = ui.as_weak();
+        let in_flight = Arc::new(AtomicBool::new(false));
         move || {
-            if let Err(error) = open_releases_page() {
+            if in_flight.load(Ordering::Acquire) {
+                return;
+            }
+            let release = available.lock().unwrap().clone();
+            if let Some(release) = release {
+                if !lifecycle::installed() {
+                    if let Some(d) = install_dialog.upgrade() {
+                        let _ = d.show();
+                    }
+                    return;
+                }
+                in_flight.store(true, Ordering::Release);
+                if let Some(ui) = ui.upgrade() {
+                    ui.set_update_available("UPDATING…".into());
+                }
+                let ui = ui.clone();
+                let in_flight = in_flight.clone();
+                std::thread::spawn(move || {
+                    let result = lifecycle::update(&release);
+                    let _ = ui.upgrade_in_event_loop(move |ui| {
+                        in_flight.store(false, Ordering::Release);
+                        match result {
+                            Ok(()) => {
+                                let _ = slint::quit_event_loop();
+                            }
+                            Err(e) => {
+                                ui.set_update_available(
+                                    format!("UPDATE {}", release.tag_name).into(),
+                                );
+                                ui.set_status(e.to_string().into());
+                            }
+                        }
+                    });
+                });
+            } else if let Err(error) = open_releases_page() {
                 if let Some(ui) = ui.upgrade() {
                     ui.set_status(error.into());
                 }
@@ -1930,13 +2136,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let tray = std::rc::Rc::new(std::cell::RefCell::new(None));
     let install_tray = {
+        let install = install_dialog.as_weak();
+        let uninstall = uninstall_dialog.as_weak();
         let tray = tray.clone();
         let ui = ui.as_weak();
         let generation = generation.clone();
         let focused = focused.clone();
         move || {
             if let Some(ui) = ui.upgrade() {
-                *tray.borrow_mut() = create_tray(&ui, &generation, &focused);
+                *tray.borrow_mut() = create_tray(
+                    &ui,
+                    &generation,
+                    &focused,
+                    install.clone(),
+                    uninstall.clone(),
+                );
             }
         }
     };
@@ -2133,6 +2347,64 @@ mod tests {
             "PageDown must scroll the answer"
         );
         ui.hide().unwrap();
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    #[ignore = "requires an isolated X11 display"]
+    fn lifecycle_dialogs_ui() {
+        use winit::platform::x11::EventLoopBuilderExtX11;
+        let mut event_loop =
+            winit::event_loop::EventLoop::<slint::winit_030::SlintEvent>::with_user_event();
+        event_loop.with_x11().with_any_thread(true);
+        slint::BackendSelector::new()
+            .backend_name("winit-software".into())
+            .with_winit_event_loop_builder(event_loop)
+            .select()
+            .unwrap();
+        let install = InstallDialog::new().unwrap();
+        assert!(install.get_autostart());
+        install.set_autostart(false);
+        let selected = std::rc::Rc::new(std::cell::Cell::new(true));
+        install.on_install({
+            let selected = selected.clone();
+            move |value| selected.set(value)
+        });
+        install.invoke_install(install.get_autostart());
+        assert!(!selected.get());
+        install.set_autostart(true);
+        install.show().unwrap();
+        let shot = install.window().take_snapshot().unwrap();
+        image::save_buffer(
+            "/tmp/findout-install-dialog.png",
+            shot.as_bytes(),
+            shot.width(),
+            shot.height(),
+            image::ColorType::Rgba8,
+        )
+        .unwrap();
+        install.hide().unwrap();
+        let uninstall = UninstallDialog::new().unwrap();
+        let confirmed = std::rc::Rc::new(std::cell::Cell::new(false));
+        uninstall.on_confirm({
+            let confirmed = confirmed.clone();
+            move || confirmed.set(true)
+        });
+        uninstall.show().unwrap();
+        uninstall.invoke_cancel();
+        assert!(!confirmed.get());
+        let shot = uninstall.window().take_snapshot().unwrap();
+        image::save_buffer(
+            "/tmp/findout-uninstall-dialog.png",
+            shot.as_bytes(),
+            shot.width(),
+            shot.height(),
+            image::ColorType::Rgba8,
+        )
+        .unwrap();
+        uninstall.invoke_confirm();
+        assert!(confirmed.get());
+        uninstall.hide().unwrap();
     }
 
     #[test]

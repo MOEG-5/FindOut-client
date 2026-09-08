@@ -41,6 +41,9 @@ jobs:
           test "v${package_version}" = "${GITHUB_REF_NAME}"
           test -n "${FINDOUT_API_ORIGIN}"
 
+      - name: Test
+        run: cargo test --locked
+
       - name: Build
         env:
           RUSTFLAGS: ${{ runner.os == 'Windows' && '-C target-feature=+crt-static' || '' }}
@@ -50,6 +53,7 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           mkdir -p dist
+          cp target/release/findout-client dist/findout-client-linux-x86_64
           tar -czf "dist/${{ matrix.archive }}" -C target/release findout-client
 
       - name: Package Windows
@@ -57,12 +61,13 @@ jobs:
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force dist | Out-Null
+          Copy-Item target/release/findout-client.exe dist/findout-client-windows-x86_64.exe
           Compress-Archive -Path target/release/findout-client.exe -DestinationPath "dist/${{ matrix.archive }}"
 
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.archive }}
-          path: dist/${{ matrix.archive }}
+          path: dist/*
           if-no-files-found: error
 
   publish:
