@@ -5,6 +5,10 @@ import pathlib
 import plistlib
 import shutil
 import stat
+import subprocess
+import sys
+import tempfile
+import time
 import tomllib
 import zipfile
 
@@ -34,10 +38,38 @@ def package(binary: pathlib.Path, output: pathlib.Path, arch: str) -> pathlib.Pa
     return archive
 
 
+def smoke_test(output: pathlib.Path) -> None:
+    """Check startup only in the disposable macOS runner session."""
+    executable = (output / "FindOut.app/Contents/MacOS/findout-client").resolve()
+    with tempfile.TemporaryFile(mode="w+") as log:
+        process = subprocess.Popen([str(executable)], stdin=subprocess.DEVNULL,
+                                   stdout=log, stderr=subprocess.STDOUT)
+        try:
+            time.sleep(5)
+            if process.poll() is not None:
+                log.seek(0)
+                raise RuntimeError(f"Packaged app exited during startup: {log.read()}")
+        finally:
+            if process.poll() is None:
+                process.terminate()
+                try:
+                    process.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    process.wait()
+    print("Packaged macOS app stayed running through startup")
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--binary", type=pathlib.Path, default=pathlib.Path("target/release/findout-client"))
     parser.add_argument("--output", type=pathlib.Path, default=pathlib.Path("dist"))
     parser.add_argument("--arch", required=True, choices=["aarch64", "x86_64"])
+    parser.add_argument("--smoke-test", action="store_true",
+                        help="Launch briefly; use only in a disposable macOS GUI session")
     args = parser.parse_args()
+    if args.smoke_test and sys.platform != "darwin":
+        parser.error("--smoke-test requires macOS")
     print(package(args.binary, args.output, args.arch))
+    if args.smoke_test:
+        smoke_test(args.output)

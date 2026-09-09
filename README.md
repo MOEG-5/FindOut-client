@@ -118,7 +118,8 @@ separate PowerShell process to replace or remove the executable after exit.
 The release workflow builds Linux x86_64, Windows x86_64, macOS Apple Silicon
 (aarch64), and macOS Intel (x86_64) archives when a `v*` tag is pushed, then
 publishes the archives and standalone updater executables to a GitHub Release.
-Each Mac build runs its tests on a matching native macOS runner. Manual workflow
+Each Mac build runs its tests on a matching native macOS runner and briefly
+launches the packaged app in that disposable session to check startup. Manual workflow
 runs build downloadable artifacts without publishing a release. Set the
 repository Actions variable `FINDOUT_API_ORIGIN` to the production HTTPS API
 origin before tagging. The workflow injects the repository name into the

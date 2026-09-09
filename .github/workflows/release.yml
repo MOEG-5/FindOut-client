@@ -79,16 +79,21 @@ jobs:
           Copy-Item target/release/findout-client.exe dist/findout-client-windows-x86_64.exe
           Compress-Archive -Path target/release/findout-client.exe -DestinationPath "dist/${{ matrix.archive }}"
 
+      - uses: actions/setup-python@v6
+        if: runner.os == 'macOS'
+        with:
+          python-version: "3.12"
+
       - name: Package macOS
         if: runner.os == 'macOS'
         env:
           MAC_ARCH: ${{ matrix.arch }}
         run: |
           expected_arch="${MAC_ARCH/aarch64/arm64}"
-          lipo -verify_arch "${expected_arch}" target/release/findout-client
+          lipo target/release/findout-client -verify_arch "${expected_arch}"
           codesign --force --sign - target/release/findout-client
           codesign --verify --strict target/release/findout-client
-          python3 scripts/package-macos.py --arch "${MAC_ARCH}"
+          python3 scripts/package-macos.py --arch "${MAC_ARCH}" --smoke-test
           plutil -lint dist/FindOut.app/Contents/Info.plist
           rm -r dist/FindOut.app
 
