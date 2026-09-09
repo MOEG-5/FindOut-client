@@ -21,7 +21,6 @@ use std::io::Write;
 use std::io::{Cursor, Read};
 #[cfg(feature = "dev-metrics")]
 use std::path::PathBuf;
-#[cfg(any(target_os = "linux", target_os = "windows"))]
 use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -1663,7 +1662,16 @@ fn place_popup(ui: &FindOutWindow) {
             continue;
         }
         let visible = screen.visibleFrame();
-        let size = ui.window().size().to_logical(ui.window().scale_factor());
+        let geometry = PopupGeometry {
+            cursor_x: cursor.x.round() as i32,
+            cursor_y: (primary_top - cursor.y).round() as i32,
+            work_x: visible.origin.x.round() as i32,
+            work_y: (primary_top - visible.origin.y - visible.size.height).round() as i32,
+            work_width: visible.size.width.round() as i32,
+            work_height: visible.size.height.round() as i32,
+            scale_factor: ui.window().scale_factor(),
+        };
+        let size = ui.window().size().to_logical(geometry.scale_factor);
         let width = if size.width > 0.0 {
             size.width
         } else {
@@ -1673,15 +1681,6 @@ fn place_popup(ui: &FindOutWindow) {
             size.height
         } else {
             POPUP_HEIGHT as f32
-        };
-        let geometry = PopupGeometry {
-            cursor_x: cursor.x.round() as i32,
-            cursor_y: (primary_top - cursor.y).round() as i32,
-            work_x: visible.origin.x.round() as i32,
-            work_y: (primary_top - visible.origin.y - visible.size.height).round() as i32,
-            work_width: visible.size.width.round() as i32,
-            work_height: visible.size.height.round() as i32,
-            scale_factor: screen.backingScaleFactor() as f32,
         };
         let position = popup_position(geometry, width.round() as i32, height.round() as i32);
         ui.window().set_position(slint::LogicalPosition::new(
@@ -1911,21 +1910,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         backend.with_winit_event_loop_builder(event_loop)
     };
     backend
-        .with_winit_window_attributes_hook(|mut attributes| {
+        .with_winit_window_attributes_hook(|attributes| {
             #[cfg(target_os = "linux")]
-            {
+            let attributes = {
                 use slint::winit_030::winit::platform::x11::{WindowAttributesExtX11, WindowType};
                 // ponytail: X11 has no portable shadow-off hint; Utility keeps focus and
                 // lets common WMs apply SKIP_TASKBAR without override-redirect.
-                attributes = attributes.with_x11_window_type(vec![WindowType::Utility]);
-            }
+                attributes.with_x11_window_type(vec![WindowType::Utility])
+            };
             #[cfg(target_os = "windows")]
-            {
+            let attributes = {
                 use slint::winit_030::winit::platform::windows::WindowAttributesExtWindows;
-                attributes = attributes
+                attributes
                     .with_skip_taskbar(true)
-                    .with_undecorated_shadow(false);
-            }
+                    .with_undecorated_shadow(false)
+            };
             attributes
         })
         .select()?;
