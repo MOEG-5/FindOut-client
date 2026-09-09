@@ -2,9 +2,9 @@
 
 **FindOut is a tiny desktop assistant for quickly asking questions without breaking your flow.**
 
-Press a shortcut (Windows: alt+space Linux: super + space), type what you want to know, and get an answer. FindOut can search the web when needed, understand images from your clipboard, and use a small amount of information about your computer to give more useful system-specific answers.
+Press a shortcut (Windows: Alt+Space, Linux: Super+Space, macOS: Option+Space), type what you want to know, and get an answer. FindOut can search the web when needed, understand images from your clipboard, and use a small amount of information about your computer to give more useful system-specific answers.
 
-It runs on **Windows and Linux** and is designed to stay lightweight, fast, and out of the way.
+It runs on **Windows, Linux, and macOS** and is designed to stay lightweight, fast, and out of the way.
 
 ## Try it for free
 
@@ -37,8 +37,7 @@ FindOut is a small native Slint application. Provider keys, model selection, sea
 
 Licensed under [GPL-3.0-only](LICENSE).
 
-The current desktop client is a small native Slint application for Linux and
-Windows. Provider keys and model/search logic stay on the FindOut server; the
+The current desktop client is a small native Slint application for Linux, Windows, and macOS. Provider keys and model/search logic stay on the FindOut server; the
 client stores only a revocable installation token in the OS keychain.
 
 Install a current stable Rust toolchain first. Linux additionally needs GTK 3,
@@ -47,6 +46,8 @@ a Secret Service-compatible keychain, and an X11-capable environment; on Arch:
 ```sh
 sudo pacman -S gtk3 libsecret
 ```
+
+macOS developers also need Xcode Command Line Tools (`xcode-select --install`).
 
 Run it from the repository root:
 
@@ -75,7 +76,8 @@ FINDOUT_API_ORIGIN=https://findout-backend-staging.vercel.app \
 It shows the last end-to-end round-trip time in the answer footer and appends
 one CSV row per query to `$XDG_STATE_HOME/findout/dev-metrics.csv` (normally
 `~/.local/state/findout/dev-metrics.csv`). Windows uses
-`%LOCALAPPDATA%\\FindOut\\dev-metrics.csv`. Columns are timestamp, round-trip
+`%LOCALAPPDATA%\\FindOut\\dev-metrics.csv`; macOS uses
+`~/Library/Application Support/FindOut/dev-metrics.csv`. Columns are timestamp, round-trip
 milliseconds, outcome, and search/force-search/image flags. The file never
 contains questions, answers, images, activation keys, device identifiers, or
 tokens. Normal builds neither show nor write metrics.
@@ -107,11 +109,17 @@ not removed.
 Linux installs in `$XDG_DATA_HOME/findout` (normally `~/.local/share/findout`),
 with desktop entries in the XDG applications and autostart directories. Windows
 installs in `%LOCALAPPDATA%\FindOut`, with Start Menu and optional Startup
-shortcuts. Neither platform requires administrator access. Windows uses a
+shortcuts. macOS installs in `~/Applications/FindOut.app`, stores local state in
+`~/Library/Application Support/FindOut`, and uses
+`~/Library/LaunchAgents/app.findout.client.plist` for optional startup at the next
+login. None of these installations requires administrator access. Windows uses a
 separate PowerShell process to replace or remove the executable after exit.
 
-The release workflow builds Linux x86_64 and Windows x86_64 archives when a
-`v*` tag is pushed, then publishes the archives and standalone updater executables to a GitHub Release. Set the
+The release workflow builds Linux x86_64, Windows x86_64, macOS Apple Silicon
+(aarch64), and macOS Intel (x86_64) archives when a `v*` tag is pushed, then
+publishes the archives and standalone updater executables to a GitHub Release.
+Each Mac build runs its tests on a matching native macOS runner. Manual workflow
+runs build downloadable artifacts without publishing a release. Set the
 repository Actions variable `FINDOUT_API_ORIGIN` to the production HTTPS API
 origin before tagging. The workflow injects the repository name into the
 binary, so local builds only enable update checking when built with both
@@ -132,16 +140,22 @@ tooling and send each key privately.
 ## Client responsibilities
 
 - Frameless, translucent popup with the platform hotkey: Super+Space on Linux
-  and Alt+Space on Windows. It opens around the pointer, stays inside the
+  Alt+Space on Windows, and Option+Space on macOS. It opens around the pointer, stays inside the
   monitor work area, and has no taskbar entry. Windows explicitly disables the
   borderless-window shadow; X11 uses a utility window hint, while any remaining
   compositor shadow is controlled by the desktop.
 - A native tray icon keeps the hidden client reachable. Its menu selects the
-  Light, Dark, or Retro palette; Retro is the default for now.
+  Light, Dark, or Retro palette; Light is the default.
 - Activation UI with issued-key support, free-trial enrollment, and OS keychain
   storage. Tokens are isolated by configured backend origin.
 - Text queries with cursor-following horizontal scrolling, optional forced web
   search, and selectable, scrollable answers with copying.
+- Follow-up questions send the last four successful question/answer pairs, oldest
+  first, capped at 2,000 characters per question or answer. History stays in
+  memory; the server remains stateless. Search Web retries the original request
+  with its context and image, replacing that turn's answer in history. Earlier
+  images are not included in subsequent follow-up questions.
+- Click the bottom-left feedback address to copy it; confirmation lasts two seconds.
 - Clipboard image paste. PNG/JPEG inputs are checked before decode, rejected
   above 3 MB or the source safety envelope, downscaled to a 4096-pixel maximum edge,
   padded to a 1920×1080 canvas when small, and sent as PNG.
@@ -150,8 +164,26 @@ tooling and send each key privately.
 
 Escape, the global hotkey, clicking away, or losing focus hides the popup. A
 hidden popup keeps its current view for 10 seconds so an accidental dismissal
-can be recovered; after that the question, answer, status, and pending image
-are cleared. Ctrl-C stops the development process.
+can be recovered; after that the question, answer, status, pending image,
+and conversation history are cleared. Ctrl-C stops the development process.
+
+## macOS downloads
+
+Choose `findout-client-macos-aarch64.zip` for Apple Silicon or
+`findout-client-macos-x86_64.zip` for Intel. Extract and open `FindOut.app`, then
+use the installation dialog to install for your account. You can also move the
+app to `~/Applications` yourself. The menu-bar icon opens the popup.
+
+These builds have ad-hoc executable signatures, but are not Developer ID signed
+or notarized. macOS may block the first launch; use the system's Privacy &
+Security “Open Anyway” flow only if you trust the downloaded release. Public
+notarization requires an Apple Developer signing identity and credentials.
+
+To create a bundle locally on a Mac after building the release executable:
+
+```sh
+python3 scripts/package-macos.py --arch aarch64  # x86_64 on an Intel Mac
+```
 
 ## Platform notes
 
@@ -160,6 +192,10 @@ are cleared. Ctrl-C stops the development process.
   and the tray uses StatusNotifierItem/AppIndicator over D-Bus. Desktops need
   a compatible tray host; GNOME may require its AppIndicator extension. The
   keychain uses Secret Service.
+- macOS 12 or newer uses Keychain, the native clipboard, and a menu-bar icon.
+  Option+Space opens the popup; Cmd+V pastes images. Popup positioning accounts
+  for Retina scaling and the menu bar/Dock work area. Trial identity uses the
+  existing persistent random Keychain fallback. The app has no Dock icon.
 - Windows uses Credential Manager through the keyring crate and Alt+Space,
   because Win+Space is reserved for keyboard-layout switching.
 
@@ -218,6 +254,7 @@ X-FindOut-Protocol: 1
 
 {"query":"...",
  "force_search":false,
+ "previous_turns":[{"query":"earlier question","answer":"earlier answer"}],
  "image":{"mime_type":"image/png","data":"<base64, optional>"},
  "system_context":"CachyOS | pkg:pacman | shell:/usr/bin/zsh"}
 ```

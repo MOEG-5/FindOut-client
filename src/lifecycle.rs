@@ -29,6 +29,7 @@ struct State {
     updated_version: String,
     updated_at: u64,
 }
+#[cfg(target_os = "linux")]
 fn base(var: &str, fallback: &str) -> Result<PathBuf> {
     if let Some(p) = std::env::var_os(var)
         .map(PathBuf::from)
@@ -46,12 +47,19 @@ pub fn root() -> Result<PathBuf> {
                 .join("FindOut"),
         )
     }
-    #[cfg(not(target_os = "windows"))]
+    #[cfg(target_os = "macos")]
+    {
+        Ok(mac_home()?.join("Library/Application Support/FindOut"))
+    }
+    #[cfg(target_os = "linux")]
     {
         Ok(base("XDG_DATA_HOME", ".local/share")?.join("findout"))
     }
 }
 fn executable() -> Result<PathBuf> {
+    #[cfg(target_os = "macos")]
+    return Ok(app_bundle()?.join("Contents/MacOS/findout-client"));
+    #[cfg(not(target_os = "macos"))]
     Ok(root()?.join(if cfg!(windows) {
         "findout-client.exe"
     } else {
@@ -68,6 +76,9 @@ pub fn instance_lock() -> Result<Option<fs::File>> {
     if !installed() {
         return Ok(None);
     }
+    fs::create_dir_all(root()?)?;
+    #[cfg(target_os = "macos")]
+    write_bundle_metadata()?;
     let file = fs::OpenOptions::new()
         .create(true)
         .truncate(false)
@@ -141,6 +152,85 @@ fn desktop_path(startup: bool) -> Result<PathBuf> {
             }),
     )
 }
+#[cfg(target_os = "macos")]
+fn mac_home() -> Result<PathBuf> {
+    let home = PathBuf::from(std::env::var_os("HOME").ok_or("Home directory unavailable")?);
+    if !home.is_absolute() {
+        return Err("Home directory must be absolute".into());
+    }
+    Ok(home)
+}
+#[cfg(target_os = "macos")]
+fn app_bundle() -> Result<PathBuf> {
+    Ok(mac_home()?.join("Applications/FindOut.app"))
+}
+#[cfg(target_os = "macos")]
+fn desktop_path(startup: bool) -> Result<PathBuf> {
+    if startup {
+        Ok(mac_home()?.join("Library/LaunchAgents/app.findout.client.plist"))
+    } else {
+        app_bundle()
+    }
+}
+#[cfg(any(target_os = "macos", test))]
+fn xml_text(value: &str) -> String {
+    value
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&apos;")
+}
+#[cfg(any(target_os = "macos", test))]
+fn launch_agent(exe: &str) -> String {
+    format!(
+        r#"<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+<key>Label</key><string>app.findout.client</string>
+<key>ProgramArguments</key><array><string>{}</string></array>
+<key>RunAtLoad</key><true/>
+<key>LimitLoadToSessionType</key><string>Aqua</string>
+</dict></plist>
+"#,
+        xml_text(exe)
+    )
+}
+#[cfg(target_os = "macos")]
+fn write_bundle_metadata() -> Result<()> {
+    let contents = app_bundle()?.join("Contents");
+    fs::create_dir_all(contents.join("MacOS"))?;
+    fs::write(
+        contents.join("Info.plist"),
+        include_str!("../packaging/macos/Info.plist").replace("@VERSION@", CURRENT_VERSION),
+    )?;
+    Ok(())
+}
+#[cfg(target_os = "macos")]
+fn launcher(startup: bool, enabled: bool) -> Result<()> {
+    let path = desktop_path(startup)?;
+    if !enabled {
+        return if startup {
+            remove(&path)
+        } else {
+            match fs::remove_dir_all(path) {
+                Ok(()) => Ok(()),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+                Err(error) => Err(error.into()),
+            }
+        };
+    }
+    if !startup {
+        return write_bundle_metadata();
+    }
+    fs::create_dir_all(path.parent().ok_or("Invalid launcher path")?)?;
+    fs::write(
+        path,
+        launch_agent(executable()?.to_str().ok_or("Invalid executable path")?),
+    )?;
+    Ok(())
+}
+#[cfg(not(target_os = "macos"))]
 fn launcher(startup: bool, enabled: bool) -> Result<()> {
     let p = desktop_path(startup)?;
     if !enabled {
@@ -187,6 +277,7 @@ pub fn install(startup: bool, origin: &str) -> Result<()> {
     let _operation = Operation::begin()?;
     fs::create_dir_all(root()?)?;
     let target = executable()?;
+    fs::create_dir_all(target.parent().ok_or("Invalid executable path")?)?;
     if !installed() {
         if target.exists() && fs::read(&target)? != fs::read(std::env::current_exe()?)? {
             return Err(
@@ -265,6 +356,8 @@ pub fn uninstall(origin: &str) -> Result<()> {
         }
         fs::remove_dir_all(root()?)?;
     }
+    #[cfg(target_os = "macos")]
+    fs::remove_dir_all(root()?)?;
     #[cfg(windows)]
     helper(&executable()?, false, true)?;
     Ok(())
@@ -276,19 +369,22 @@ pub struct Asset {
     digest: Option<String>,
     size: u64,
 }
+fn update_asset_name(os: &str, arch: &str) -> Option<&'static str> {
+    match (os, arch) {
+        ("linux", "x86_64") => Some("findout-client-linux-x86_64"),
+        ("windows", "x86_64") => Some("findout-client-windows-x86_64.exe"),
+        ("macos", "aarch64") => Some("findout-client-macos-aarch64"),
+        ("macos", "x86_64") => Some("findout-client-macos-x86_64"),
+        _ => None,
+    }
+}
 pub fn update(release: &GitHubRelease) -> Result<()> {
     let _operation = Operation::begin()?;
     if !installed() {
         return Err("Install FindOut before updating.".into());
     }
-    if !cfg!(target_arch = "x86_64") {
-        return Err("No update is available for this architecture".into());
-    }
-    let name = if cfg!(windows) {
-        "findout-client-windows-x86_64.exe"
-    } else {
-        "findout-client-linux-x86_64"
-    };
+    let name = update_asset_name(std::env::consts::OS, std::env::consts::ARCH)
+        .ok_or("No update is available for this platform or architecture")?;
     let a = release
         .assets
         .iter()
@@ -373,6 +469,34 @@ fn verify(bytes: &[u8], a: &Asset) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn update_assets_match_platform_and_architecture() {
+        assert_eq!(
+            update_asset_name("macos", "aarch64"),
+            Some("findout-client-macos-aarch64")
+        );
+        assert_eq!(
+            update_asset_name("macos", "x86_64"),
+            Some("findout-client-macos-x86_64")
+        );
+        assert_eq!(
+            update_asset_name("windows", "x86_64"),
+            Some("findout-client-windows-x86_64.exe")
+        );
+        assert_eq!(
+            update_asset_name("linux", "x86_64"),
+            Some("findout-client-linux-x86_64")
+        );
+        assert_eq!(update_asset_name("linux", "aarch64"), None);
+    }
+    #[test]
+    fn launch_agent_escapes_paths_as_data() {
+        let plist =
+            launch_agent("/Users/a & <b>/Applications/FindOut.app/Contents/MacOS/findout-client");
+        assert!(plist.contains("/Users/a &amp; &lt;b&gt;/Applications/"));
+        assert!(plist.contains("<key>RunAtLoad</key><true/>"));
+        assert!(!plist.contains("KeepAlive"));
+    }
     #[test]
     fn rejects_corrupt_or_missing_digest() {
         let mut a = Asset {

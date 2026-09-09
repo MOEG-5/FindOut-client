@@ -34,6 +34,9 @@ const TOKEN_KEYRING_USER: &str = "installation";
 const TRIAL_DEVICE_KEYRING_USER: &str = "trial-device-v1";
 const TRIAL_DEVICE_MESSAGE: &[u8] = b"findout/trial/device/v1";
 const MAX_QUERY_CHARS: usize = 4_000;
+const MAX_PREVIOUS_TURNS: usize = 4;
+const MAX_TURN_CHARS: usize = 2_000;
+const FEEDBACK_EMAIL: &str = "moeg-5@agentmail.to";
 // Fits one base64-encoded image plus JSON below Vercel's 4.5 MB request limit.
 const MAX_IMAGE_BYTES: usize = 3_000_000;
 const MAX_IMAGE_BASE64_CHARS: usize = MAX_IMAGE_BYTES.div_ceil(3) * 4;
@@ -67,16 +70,19 @@ slint::slint! {
 
         in property <bool> activated: false;
         in property <bool> busy: false;
+        in property <bool> feedback-copied: false;
         in property <bool> has-image: false;
         in property <bool> can-force-search: false;
         in property <string> answer: "";
         in property <string> status: "";
         in property <string> update_available: "";
         in property <bool> dev_metrics: false;
+        in property <string> shortcut-label: "SUPER + SPACE";
+        in property <string> paste-label: "CTRL+V";
         in property <string> roundtrip: "";
         in-out property <string> question: "";
         in-out property <string> activation_key: "";
-        in property <int> theme: 2;
+        in property <int> theme: 0;
         init => { Palette.color-scheme = root.theme == 0 ? ColorScheme.light : ColorScheme.dark; }
         changed theme => { Palette.color-scheme = root.theme == 0 ? ColorScheme.light : ColorScheme.dark; }
 
@@ -99,6 +105,7 @@ slint::slint! {
         callback paste-image();
         callback clear-image();
         callback copy-answer();
+        callback copy-feedback();
         callback open-releases();
         callback escape();
 
@@ -128,7 +135,7 @@ slint::slint! {
                     }
                     Text {
                         text: !root.activated ? "ACTIVATE ONCE" :
-                            root.dev_metrics ? "DEV · SUPER + SPACE" : "SUPER + SPACE";
+                            root.dev_metrics ? "DEV · " + root.shortcut-label : root.shortcut-label;
                         color: root.muted_text;
                         font-size: 10px;
                     }
@@ -330,7 +337,7 @@ slint::slint! {
                     HorizontalLayout {
                         height: 18px;
                         Text {
-                            text: root.has-image ? "CTRL+V TO REPLACE IMAGE" : "CTRL+V TO ATTACH IMAGE";
+                            text: root.paste-label + (root.has-image ? " TO REPLACE IMAGE" : " TO ATTACH IMAGE");
                             color: root.faint_text;
                             font-size: 10px;
                             horizontal-stretch: 1;
@@ -373,6 +380,22 @@ slint::slint! {
 
                 HorizontalLayout {
                     height: 18px;
+                    Rectangle {
+                        width: 193px;
+                        Text {
+                            width: parent.width;
+                            height: parent.height;
+                            horizontal-alignment: left;
+                            text: root.feedback-copied ? "copied to clipboard" : "feedback: moeg-5@agentmail.to";
+                            color: feedback-area.has-hover ? root.accent : root.muted_text;
+                            font-size: 10px;
+                            vertical-alignment: center;
+                        }
+                        feedback-area := TouchArea {
+                            mouse-cursor: pointer;
+                            clicked => { root.copy-feedback(); }
+                        }
+                    }
                     Text {
                         text: root.status;
                         color: root.muted_text;
@@ -444,7 +467,7 @@ slint::slint! {
         icon: @image-url("../assets/findout-tray.svg");
         tooltip: "FindOut";
         title: "FindOut";
-        in property <int> theme: 2;
+        in property <int> theme: 0;
 
         callback show-window();
         callback select-theme(int);
@@ -518,14 +541,68 @@ struct ActivationResponse {
     device_token: String,
 }
 
-#[derive(Serialize)]
+#[derive(Clone, Serialize)]
 struct AskRequest {
     query: String,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    previous_turns: Vec<ConversationTurn>,
     force_search: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     image: Option<ImagePayload>,
     #[serde(skip_serializing_if = "Option::is_none")]
     system_context: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+struct ConversationTurn {
+    query: String,
+    answer: String,
+}
+
+#[derive(Default)]
+struct Conversation {
+    turns: Vec<ConversationTurn>,
+    last_request: Option<AskRequest>,
+}
+
+impl Conversation {
+    fn prepare(
+        &mut self,
+        text: &str,
+        force_search: bool,
+        image: Option<ImagePayload>,
+    ) -> Result<AskRequest, String> {
+        let request = if force_search {
+            let mut request = self.last_request.clone().ok_or("Enter a question")?;
+            request.force_search = true;
+            request
+        } else {
+            AskRequest {
+                query: validate_query(text)?.to_owned(),
+                previous_turns: self.turns.clone(),
+                force_search: false,
+                image,
+                system_context: None,
+            }
+        };
+        self.last_request = Some(request.clone());
+        Ok(request)
+    }
+
+    fn complete(&mut self, request: &AskRequest, answer: &str) {
+        // Rebuild from the original context so SEARCH WEB replaces its answer.
+        self.turns = request.previous_turns.clone();
+        self.turns.push(ConversationTurn {
+            query: request.query.chars().take(MAX_TURN_CHARS).collect(),
+            answer: answer.chars().take(MAX_TURN_CHARS).collect(),
+        });
+        let excess = self.turns.len().saturating_sub(MAX_PREVIOUS_TURNS);
+        self.turns.drain(..excess);
+    }
+
+    fn clear(&mut self) {
+        *self = Self::default();
+    }
 }
 
 #[derive(Deserialize)]
@@ -1066,7 +1143,9 @@ fn open_releases_page() -> Result<(), String> {
         .spawn();
     #[cfg(target_os = "linux")]
     let result = Command::new("xdg-open").arg(releases_url).spawn();
-    #[cfg(not(any(target_os = "linux", target_os = "windows")))]
+    #[cfg(target_os = "macos")]
+    let result = Command::new("/usr/bin/open").arg(releases_url).spawn();
+    #[cfg(not(any(target_os = "linux", target_os = "windows", target_os = "macos")))]
     let result: Result<std::process::Child, std::io::Error> = Err(std::io::Error::new(
         std::io::ErrorKind::Unsupported,
         "opening URLs is unsupported on this platform",
@@ -1080,10 +1159,15 @@ fn open_releases_page() -> Result<(), String> {
 fn metrics_path() -> std::io::Result<PathBuf> {
     #[cfg(target_os = "windows")]
     let base = std::env::var_os("LOCALAPPDATA").map(PathBuf::from);
-    #[cfg(not(target_os = "windows"))]
+    #[cfg(target_os = "macos")]
+    return lifecycle::root()
+        .map(|path| path.join("dev-metrics.csv"))
+        .map_err(|error| std::io::Error::other(error.to_string()));
+    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
     let base = std::env::var_os("XDG_STATE_HOME")
         .map(PathBuf::from)
         .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".local/state")));
+    #[cfg(not(target_os = "macos"))]
     base.map(|path| path.join("findout").join("dev-metrics.csv"))
         .ok_or_else(|| {
             std::io::Error::new(std::io::ErrorKind::NotFound, "No local state directory")
@@ -1226,12 +1310,12 @@ fn system_context() -> String {
         }
         parts.join(" | ")
     }
-    #[cfg(target_os = "windows")]
+    #[cfg(any(target_os = "windows", target_os = "macos"))]
     {
         let info = os_info::get();
         format!("{} {}", info.os_type(), info.version())
     }
-    #[cfg(not(any(target_os = "linux", target_os = "windows")))]
+    #[cfg(not(any(target_os = "linux", target_os = "windows", target_os = "macos")))]
     {
         String::new()
     }
@@ -1240,9 +1324,8 @@ fn system_context() -> String {
 #[allow(clippy::too_many_arguments)]
 fn query(
     origin: String,
-    text: String,
-    force_search: bool,
-    image: Option<ImagePayload>,
+    mut request: AskRequest,
+    conversation: Arc<Mutex<Conversation>>,
     attached_image: Arc<Mutex<Option<ImagePayload>>>,
     ui: Weak<FindOutWindow>,
     generation: Arc<Mutex<u64>>,
@@ -1252,23 +1335,23 @@ fn query(
 ) {
     std::thread::spawn(move || {
         #[cfg(feature = "dev-metrics")]
-        let logged_request = text.clone();
+        let logged_request = request.query.clone();
         #[cfg(feature = "dev-metrics")]
-        let had_image = image.is_some();
+        let had_image = request.image.is_some();
         let result = (|| -> Result<HttpResponse<AskResponse>, String> {
-            let query = validate_query(&text)?.to_owned();
+            request.image = request
+                .image
+                .take()
+                .map(normalize_image_payload)
+                .transpose()?;
+            request.system_context = Some(system_context());
             let device_token = token(&origin)?.ok_or_else(|| "Activation required".to_owned())?;
             let response: Result<HttpResponse<AskResponse>, RequestError> = post_json(
                 agent()
                     .post(&format!("{origin}/v1/query"))
                     .set("X-FindOut-Protocol", PROTOCOL_VERSION)
                     .set("Authorization", &format!("Bearer {device_token}")),
-                AskRequest {
-                    query,
-                    force_search,
-                    image: image.map(normalize_image_payload).transpose()?,
-                    system_context: Some(system_context()),
-                },
+                &request,
             );
             match response {
                 Err(RequestError::Http(401, _, _)) => {
@@ -1279,7 +1362,6 @@ fn query(
                 Ok(answer) => Ok(answer),
             }
         })();
-        in_flight.store(false, Ordering::Release);
         #[cfg(feature = "dev-metrics")]
         let elapsed = _started.elapsed();
         #[cfg(feature = "dev-metrics")]
@@ -1294,7 +1376,7 @@ fn query(
                 elapsed,
                 outcome,
                 searched,
-                force_search,
+                request.force_search,
                 had_image,
             ) {
                 eprintln!("FindOut metrics log unavailable: {error}");
@@ -1303,6 +1385,7 @@ fn query(
         #[cfg(feature = "dev-metrics")]
         let roundtrip = format_roundtrip(elapsed);
         let _ = slint::invoke_from_event_loop(move || {
+            in_flight.store(false, Ordering::Release);
             if !is_current_generation(&generation, request_generation) {
                 return;
             }
@@ -1312,6 +1395,9 @@ fn query(
                 ui.set_roundtrip(roundtrip.into());
                 match result {
                     Ok(answer) => {
+                        if let Ok(mut conversation) = conversation.lock() {
+                            conversation.complete(&request, &answer.body.answer);
+                        }
                         if let Ok(mut image) = attached_image.lock() {
                             *image = None;
                         }
@@ -1428,8 +1514,29 @@ fn copy_answer(answer: String, ui: Weak<FindOutWindow>) {
     }
 }
 
+fn copy_feedback(ui: Weak<FindOutWindow>, timer: &Timer) {
+    let Some(window) = ui.upgrade() else {
+        return;
+    };
+    match write_clipboard_text(FEEDBACK_EMAIL.to_owned()) {
+        Ok(()) => {
+            window.set_feedback_copied(true);
+            timer.start(
+                slint::TimerMode::SingleShot,
+                Duration::from_secs(2),
+                move || {
+                    if let Some(ui) = ui.upgrade() {
+                        ui.set_feedback_copied(false);
+                    }
+                },
+            );
+        }
+        Err(error) => window.set_status(error.into()),
+    }
+}
+
 fn popup_shortcut() -> HotKey {
-    let modifiers = if cfg!(windows) {
+    let modifiers = if cfg!(any(target_os = "windows", target_os = "macos")) {
         Modifiers::ALT
     } else {
         Modifiers::SUPER
@@ -1514,11 +1621,12 @@ fn popup_geometry() -> Option<PopupGeometry> {
     })
 }
 
-#[cfg(not(any(target_os = "linux", target_os = "windows")))]
+#[cfg(not(any(target_os = "linux", target_os = "windows", target_os = "macos")))]
 fn popup_geometry() -> Option<PopupGeometry> {
     None
 }
 
+#[cfg(not(target_os = "macos"))]
 fn popup_size(ui: &FindOutWindow, scale_factor: f32) -> (i32, i32) {
     let size = ui.window().size();
     if size.width > 0 && size.height > 0 {
@@ -1532,6 +1640,59 @@ fn popup_size(ui: &FindOutWindow, scale_factor: f32) -> (i32, i32) {
     }
 }
 
+#[cfg(target_os = "macos")]
+fn place_popup(ui: &FindOutWindow) {
+    use objc2::MainThreadMarker;
+    use objc2_app_kit::{NSEvent, NSScreen};
+    let Some(main_thread) = MainThreadMarker::new() else {
+        return;
+    };
+    let screens = NSScreen::screens(main_thread);
+    let Some(primary) = screens.firstObject() else {
+        return;
+    };
+    let primary_top = primary.frame().size.height;
+    let cursor = NSEvent::mouseLocation();
+    for screen in screens.iter() {
+        let frame = screen.frame();
+        if cursor.x < frame.origin.x
+            || cursor.x >= frame.origin.x + frame.size.width
+            || cursor.y < frame.origin.y
+            || cursor.y >= frame.origin.y + frame.size.height
+        {
+            continue;
+        }
+        let visible = screen.visibleFrame();
+        let size = ui.window().size().to_logical(ui.window().scale_factor());
+        let width = if size.width > 0.0 {
+            size.width
+        } else {
+            POPUP_WIDTH as f32
+        };
+        let height = if size.height > 0.0 {
+            size.height
+        } else {
+            POPUP_HEIGHT as f32
+        };
+        let geometry = PopupGeometry {
+            cursor_x: cursor.x.round() as i32,
+            cursor_y: (primary_top - cursor.y).round() as i32,
+            work_x: visible.origin.x.round() as i32,
+            work_y: (primary_top - visible.origin.y - visible.size.height).round() as i32,
+            work_width: visible.size.width.round() as i32,
+            work_height: visible.size.height.round() as i32,
+            scale_factor: screen.backingScaleFactor() as f32,
+        };
+        let position = popup_position(geometry, width.round() as i32, height.round() as i32);
+        ui.window().set_position(slint::LogicalPosition::new(
+            position.x as f32,
+            position.y as f32,
+        ));
+        break;
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
 fn place_popup(ui: &FindOutWindow) {
     if let Some(geometry) = popup_geometry() {
         let (width, height) = popup_size(ui, geometry.scale_factor);
@@ -1571,7 +1732,7 @@ fn show_window(ui: &FindOutWindow, generation: &Arc<Mutex<u64>>, focused: &Arc<A
 fn hide_window(
     ui: &FindOutWindow,
     attached_image: &Arc<Mutex<Option<ImagePayload>>>,
-    last_query: &Arc<Mutex<String>>,
+    conversation: &Arc<Mutex<Conversation>>,
     generation: &Arc<Mutex<u64>>,
     request_generation: &Arc<Mutex<u64>>,
     focused: &Arc<AtomicBool>,
@@ -1586,7 +1747,7 @@ fn hide_window(
 
     let ui = ui.as_weak();
     let attached_image = attached_image.clone();
-    let last_query = last_query.clone();
+    let conversation = conversation.clone();
     let generation = generation.clone();
     let request_generation = request_generation.clone();
     Timer::single_shot(HIDE_GRACE, move || {
@@ -1610,8 +1771,8 @@ fn hide_window(
         if let Ok(mut image) = attached_image.lock() {
             *image = None;
         }
-        if let Ok(mut query) = last_query.lock() {
-            query.clear();
+        if let Ok(mut conversation) = conversation.lock() {
+            conversation.clear();
         }
     });
 }
@@ -1718,7 +1879,7 @@ fn create_tray(
             move |theme| {
                 let theme = match theme {
                     THEME_LIGHT | THEME_DARK | THEME_RETRO => theme,
-                    _ => THEME_RETRO,
+                    _ => THEME_LIGHT,
                 };
                 if let Some(ui) = ui.upgrade() {
                     ui.set_theme(theme);
@@ -1740,8 +1901,16 @@ fn create_tray(
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let origin = api_origin()?;
     let _instance_lock = lifecycle::instance_lock().map_err(|e| e.to_string())?;
-    slint::BackendSelector::new()
-        .backend_name("winit-software".into())
+    let backend = slint::BackendSelector::new().backend_name("winit-software".into());
+    #[cfg(target_os = "macos")]
+    let backend = {
+        use winit::platform::macos::{ActivationPolicy, EventLoopBuilderExtMacOS};
+        let mut event_loop =
+            winit::event_loop::EventLoop::<slint::winit_030::SlintEvent>::with_user_event();
+        event_loop.with_activation_policy(ActivationPolicy::Accessory);
+        backend.with_winit_event_loop_builder(event_loop)
+    };
+    backend
         .with_winit_window_attributes_hook(|mut attributes| {
             #[cfg(target_os = "linux")]
             {
@@ -1767,6 +1936,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let ui = FindOutWindow::new()?;
     ui.set_dev_metrics(cfg!(feature = "dev-metrics"));
+    if cfg!(target_os = "macos") {
+        ui.set_shortcut_label("OPTION + SPACE".into());
+        ui.set_paste_label("CMD+V".into());
+    } else if cfg!(target_os = "windows") {
+        ui.set_shortcut_label("ALT + SPACE".into());
+    }
     let activated = matches!(token(&origin), Ok(Some(_)));
     ui.set_activated(activated);
     if !activated {
@@ -1847,7 +2022,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let attached_image = Arc::new(Mutex::new(None::<ImagePayload>));
-    let last_query = Arc::new(Mutex::new(String::new()));
+    let conversation = Arc::new(Mutex::new(Conversation::default()));
     let generation = Arc::new(Mutex::new(0_u64));
     let request_generation = Arc::new(Mutex::new(0_u64));
     let focused = Arc::new(AtomicBool::new(false));
@@ -1884,37 +2059,30 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let origin = origin.clone();
         let ui = ui.as_weak();
         let attached_image = attached_image.clone();
-        let last_query = last_query.clone();
+        let conversation = conversation.clone();
         let request_state = request_generation.clone();
         let in_flight = query_in_flight.clone();
         move |text, force_search| {
             if in_flight.swap(true, Ordering::AcqRel) {
                 return;
             }
-            let query_text = if force_search {
-                last_query
-                    .lock()
-                    .ok()
-                    .map(|query| query.clone())
-                    .unwrap_or_default()
-            } else {
-                text.trim().to_owned()
-            };
-            if query_text.is_empty() {
-                in_flight.store(false, Ordering::Release);
-                if let Some(ui) = ui.upgrade() {
-                    ui.set_status("Enter a question".into());
+            let image = attached_image.lock().ok().and_then(|image| image.clone());
+            let request = conversation
+                .lock()
+                .unwrap()
+                .prepare(&text, force_search, image);
+            let request = match request {
+                Ok(request) => request,
+                Err(error) => {
+                    in_flight.store(false, Ordering::Release);
+                    if let Some(ui) = ui.upgrade() {
+                        ui.set_status(error.into());
+                    }
+                    return;
                 }
-                return;
-            }
+            };
             let started = Instant::now();
             let request_id = next_generation(&request_state);
-            if !force_search {
-                if let Ok(mut last) = last_query.lock() {
-                    *last = query_text.clone();
-                }
-            }
-            let image = attached_image.lock().ok().and_then(|image| image.clone());
             if let Some(ui) = ui.upgrade() {
                 ui.set_busy(true);
                 ui.set_answer("".into());
@@ -1931,9 +2099,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
             query(
                 origin.clone(),
-                query_text,
-                force_search,
-                image,
+                request,
+                conversation.clone(),
                 attached_image.clone(),
                 ui.clone(),
                 request_state.clone(),
@@ -2002,6 +2169,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     });
 
+    ui.on_copy_feedback({
+        let ui = ui.as_weak();
+        let timer = Timer::default();
+        move || copy_feedback(ui.clone(), &timer)
+    });
+
     let install_weak = install_dialog.as_weak();
     ui.on_open_releases({
         let install_dialog = install_weak.clone();
@@ -2053,7 +2226,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     ui.on_escape({
         let ui = ui.as_weak();
         let attached_image = attached_image.clone();
-        let last_query = last_query.clone();
+        let conversation = conversation.clone();
         let generation = generation.clone();
         let request_generation = request_generation.clone();
         let focused = focused.clone();
@@ -2062,7 +2235,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 hide_window(
                     &ui,
                     &attached_image,
-                    &last_query,
+                    &conversation,
                     &generation,
                     &request_generation,
                     &focused,
@@ -2074,7 +2247,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     ui.window().on_close_requested({
         let ui = ui.as_weak();
         let attached_image = attached_image.clone();
-        let last_query = last_query.clone();
+        let conversation = conversation.clone();
         let generation = generation.clone();
         let request_generation = request_generation.clone();
         let focused = focused.clone();
@@ -2083,7 +2256,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 hide_window(
                     &ui,
                     &attached_image,
-                    &last_query,
+                    &conversation,
                     &generation,
                     &request_generation,
                     &focused,
@@ -2096,7 +2269,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     ui.window().on_winit_window_event({
         let ui = ui.as_weak();
         let attached_image = attached_image.clone();
-        let last_query = last_query.clone();
+        let conversation = conversation.clone();
         let generation = generation.clone();
         let request_generation = request_generation.clone();
         let focused = focused.clone();
@@ -2108,7 +2281,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let event_generation = generation.lock().map(|value| *value).unwrap_or_default();
                 let ui = ui.clone();
                 let attached_image = attached_image.clone();
-                let last_query = last_query.clone();
+                let conversation = conversation.clone();
                 let generation = generation.clone();
                 let request_generation = request_generation.clone();
                 let focused = focused.clone();
@@ -2122,7 +2295,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         hide_window(
                             &ui,
                             &attached_image,
-                            &last_query,
+                            &conversation,
                             &generation,
                             &request_generation,
                             &focused,
@@ -2171,7 +2344,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let toggle_ui = ui.as_weak();
     let toggle_attached_image = attached_image.clone();
-    let toggle_last_query = last_query.clone();
+    let toggle_conversation = conversation.clone();
     let toggle_generation = generation.clone();
     let toggle_request_generation = request_generation.clone();
     let toggle_focused = focused.clone();
@@ -2180,7 +2353,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             if event.state == HotKeyState::Pressed && event.id == hotkey.id() {
                 let toggle_ui = toggle_ui.clone();
                 let attached_image = toggle_attached_image.clone();
-                let last_query = toggle_last_query.clone();
+                let conversation = toggle_conversation.clone();
                 let generation = toggle_generation.clone();
                 let request_generation = toggle_request_generation.clone();
                 let focused = toggle_focused.clone();
@@ -2190,7 +2363,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             hide_window(
                                 &ui,
                                 &attached_image,
-                                &last_query,
+                                &conversation,
                                 &generation,
                                 &request_generation,
                                 &focused,
@@ -2212,6 +2385,152 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 mod tests {
     use super::*;
     use image::GenericImageView;
+
+    #[test]
+    fn followups_serialize_successful_turns_in_order() {
+        let mut conversation = Conversation::default();
+        let first = conversation
+            .prepare("  how do I update Linux?  ", false, None)
+            .unwrap();
+        assert!(serde_json::to_value(&first)
+            .unwrap()
+            .get("previous_turns")
+            .is_none());
+        conversation.complete(&first, "Use your package manager.");
+        let second = conversation.prepare("and Windows?", false, None).unwrap();
+        conversation.complete(&second, "Use Windows Update.");
+        let third = conversation.prepare("where is that?", false, None).unwrap();
+        let wire = serde_json::to_value(&third).unwrap();
+        assert_eq!(
+            wire["previous_turns"],
+            serde_json::json!([
+                {"query": "how do I update Linux?", "answer": "Use your package manager."},
+                {"query": "and Windows?", "answer": "Use Windows Update."}
+            ])
+        );
+        assert_eq!(wire["query"], "where is that?");
+    }
+
+    #[test]
+    fn history_is_bounded_and_unicode_safe() {
+        let mut conversation = Conversation::default();
+        for i in 0..6 {
+            let request = conversation
+                .prepare(&format!("{i}{}", "🦀".repeat(2500)), false, None)
+                .unwrap();
+            conversation.complete(&request, &"ä🦀".repeat(2000));
+        }
+        let request = conversation.prepare("next", false, None).unwrap();
+        assert_eq!(request.previous_turns.len(), 4);
+        assert!(request.previous_turns[0].query.starts_with('2'));
+        assert!(request.previous_turns[3].query.starts_with('5'));
+        for turn in &request.previous_turns {
+            assert_eq!(turn.query.chars().count(), 2000);
+            assert_eq!(turn.answer.chars().count(), 2000);
+        }
+    }
+
+    #[test]
+    fn search_retry_reuses_context_and_image_and_replaces_answer() {
+        let mut conversation = Conversation::default();
+        let first = conversation.prepare("first", false, None).unwrap();
+        conversation.complete(&first, "first answer");
+        let second = conversation
+            .prepare(
+                "identify this",
+                false,
+                Some(ImagePayload {
+                    mime_type: "image/png".into(),
+                    data: "original image".into(),
+                }),
+            )
+            .unwrap();
+        conversation.complete(&second, "initial answer");
+        let retry = conversation.prepare("", true, None).unwrap();
+        assert_eq!(retry.query, second.query);
+        assert_eq!(retry.previous_turns, second.previous_turns);
+        assert_eq!(retry.image.as_ref().unwrap().data, "original image");
+        assert!(retry.force_search);
+        conversation.complete(&retry, "verified answer");
+        let next = conversation.prepare("follow up", false, None).unwrap();
+        assert_eq!(next.previous_turns.len(), 2);
+        assert_eq!(next.previous_turns[1].answer, "verified answer");
+        assert!(next.image.is_none());
+    }
+
+    #[test]
+    fn failed_requests_are_not_history_and_clear_starts_fresh() {
+        let mut conversation = Conversation::default();
+        let first = conversation.prepare("first", false, None).unwrap();
+        conversation.complete(&first, "answer");
+        let _failed = conversation.prepare("fails", false, None).unwrap();
+        assert!(conversation.prepare("  ", false, None).is_err());
+        let next = conversation.prepare("next", false, None).unwrap();
+        assert_eq!(next.previous_turns.len(), 1);
+        assert_eq!(next.previous_turns[0].query, "first");
+        conversation.clear();
+        assert!(conversation.prepare("", true, None).is_err());
+        assert!(conversation
+            .prepare("fresh", false, None)
+            .unwrap()
+            .previous_turns
+            .is_empty());
+    }
+
+    // Run only in a disposable X11 and D-Bus session, like clipboard_copy below.
+    #[cfg(target_os = "linux")]
+    #[test]
+    #[ignore = "requires an isolated X11 display, xdotool and xclip"]
+    fn feedback_click_copies_and_resets() {
+        use winit::platform::x11::EventLoopBuilderExtX11;
+        let mut event_loop =
+            winit::event_loop::EventLoop::<slint::winit_030::SlintEvent>::with_user_event();
+        event_loop.with_x11().with_any_thread(true);
+        slint::BackendSelector::new()
+            .backend_name("winit-software".into())
+            .with_winit_event_loop_builder(event_loop)
+            .select()
+            .unwrap();
+        let ui = FindOutWindow::new().unwrap();
+        ui.set_activated(true);
+        ui.set_answer("Use Windows Update in Settings.".into());
+        ui.on_copy_feedback({
+            let ui = ui.as_weak();
+            let timer = Timer::default();
+            move || copy_feedback(ui.clone(), &timer)
+        });
+        ui.show().unwrap();
+        let weak = ui.as_weak();
+        let reader = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(300));
+            let window = Command::new("xdotool")
+                .args(["search", "--name", "^FindOut$"])
+                .output()
+                .unwrap();
+            let id = String::from_utf8(window.stdout).unwrap();
+            let id = id.lines().next().unwrap();
+            let click = Command::new("xdotool")
+                .args(["mousemove", "--window", id, "120", "287", "click", "1"])
+                .status()
+                .unwrap();
+            std::thread::sleep(Duration::from_millis(250));
+            weak.upgrade_in_event_loop(|ui| assert!(ui.get_feedback_copied()))
+                .unwrap();
+            let copied = Command::new("timeout")
+                .args(["5s", "xclip", "-selection", "clipboard", "-out"])
+                .output()
+                .unwrap();
+            std::thread::sleep(Duration::from_millis(2200));
+            slint::quit_event_loop().unwrap();
+            (click, copied)
+        });
+        slint::run_event_loop_until_quit().unwrap();
+        let (click, copied) = reader.join().unwrap();
+        assert!(click.success());
+        assert!(copied.status.success());
+        assert_eq!(String::from_utf8(copied.stdout).unwrap(), FEEDBACK_EMAIL);
+        assert!(!ui.get_feedback_copied());
+    }
 
     // dbus-run-session --config-file=tests/dbus-session.conf -- xvfb-run -a \
     //   env -u WAYLAND_DISPLAY cargo test clipboard_copy -- --ignored
