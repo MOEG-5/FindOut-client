@@ -1,6 +1,6 @@
 [package]
 name = "findout-client"
-version = "0.1.3"
+version = "0.1.4"
 edition = "2021"
 license = "GPL-3.0-only"
 description = "Minimal native desktop client for FindOut"
