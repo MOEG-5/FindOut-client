@@ -121,4 +121,16 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
-        run: gh release create "${GITHUB_REF_NAME}" dist/* --verify-tag --generate-notes
+        run: |
+          assets=()
+          for asset in dist/*; do
+            case "$(basename "$asset")" in
+              findout-client-macos-aarch64.zip) label="Mac app - Apple Silicon (extract FindOut.app)" ;;
+              findout-client-macos-x86_64.zip) label="Mac app - Intel (extract FindOut.app)" ;;
+              findout-client-macos-aarch64) label="Automatic updater only - Apple Silicon - not the app download" ;;
+              findout-client-macos-x86_64) label="Automatic updater only - Intel - not the app download" ;;
+              *) label="" ;;
+            esac
+            assets+=("${asset}${label:+#${label}}")
+          done
+          gh release create "${GITHUB_REF_NAME}" "${assets[@]}" --verify-tag --generate-notes
