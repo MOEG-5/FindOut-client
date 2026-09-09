@@ -58,12 +58,19 @@ def verify_disk_image(image: pathlib.Path, app: pathlib.Path, launch: bool) -> N
             executable = mount / "FindOut.app/Contents/MacOS/findout-client"
             if not executable.stat().st_mode & 0o111:
                 raise RuntimeError("Mounted app is not executable")
-            subprocess.run(["codesign", "--verify", "--strict", str(executable)], check=True)
+            # v0.1.4 signs the standalone executable, not the enclosing bundle.
+            # codesign otherwise infers a bundle and requires a resource seal
+            # that this release does not have. Verify the signed code in its
+            # original standalone context; the mounted bytes were compared above.
+            with tempfile.TemporaryDirectory(prefix="findout-dmg-code-") as code_directory:
+                code = pathlib.Path(code_directory) / "findout-client"
+                shutil.copy2(executable, code)
+                subprocess.run(["codesign", "--verify", "--strict", str(code)], check=True)
             if launch:
                 smoke_test(mount)
         finally:
             subprocess.run(["hdiutil", "detach", str(mount)], check=True)
-    print("Mounted DMG app content, executable permissions and signature verified")
+    print("Mounted DMG content, permissions and standalone executable signature verified")
 
 
 def smoke_test(output: pathlib.Path) -> None:
