@@ -25,11 +25,11 @@ jobs:
           - name: macOS Apple Silicon
             os: macos-15
             arch: aarch64
-            archive: findout-client-macos-aarch64.zip
+            archive: findout-client-macos-aarch64.dmg
           - name: macOS Intel
             os: macos-15-intel
             arch: x86_64
-            archive: findout-client-macos-x86_64.zip
+            archive: findout-client-macos-x86_64.dmg
     runs-on: ${{ matrix.os }}
     env:
       FINDOUT_API_ORIGIN: ${{ vars.FINDOUT_API_ORIGIN }}
@@ -125,8 +125,8 @@ jobs:
           assets=()
           for asset in dist/*; do
             case "$(basename "$asset")" in
-              findout-client-macos-aarch64.zip) label="Mac app - Apple Silicon (extract FindOut.app)" ;;
-              findout-client-macos-x86_64.zip) label="Mac app - Intel (extract FindOut.app)" ;;
+              findout-client-macos-aarch64.dmg) label="Mac app - Apple Silicon (DMG installer)" ;;
+              findout-client-macos-x86_64.dmg) label="Mac app - Intel (DMG installer)" ;;
               findout-client-macos-aarch64) label="Automatic updater only - Apple Silicon - not the app download" ;;
               findout-client-macos-x86_64) label="Automatic updater only - Intel - not the app download" ;;
               *) label="" ;;

@@ -1,0 +1,46 @@
+name: Package existing Mac release as DMG
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing release tag with Mac app ZIPs
+        required: true
+        default: v0.1.4
+
+permissions:
+  contents: read
+
+jobs:
+  package:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-15
+            arch: aarch64
+          - os: macos-15-intel
+            arch: x86_64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - name: Download and package the published app
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ inputs.tag }}
+          MAC_ARCH: ${{ matrix.arch }}
+        run: |
+          [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          gh release download "$RELEASE_TAG" --pattern "findout-client-macos-${MAC_ARCH}.zip" --dir downloaded
+          ditto -x -k "downloaded/findout-client-macos-${MAC_ARCH}.zip" extracted
+          lipo extracted/FindOut.app/Contents/MacOS/findout-client -verify_arch "${MAC_ARCH/aarch64/arm64}"
+          python3 scripts/package-macos.py --app extracted/FindOut.app --expected-version "${RELEASE_TAG#v}" --arch "$MAC_ARCH" --smoke-test
+      - uses: actions/upload-artifact@v4
+        with:
+          name: findout-client-macos-${{ matrix.arch }}-dmg
+          path: dist/*.dmg
+          if-no-files-found: error

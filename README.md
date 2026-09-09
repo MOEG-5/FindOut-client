@@ -170,13 +170,13 @@ and conversation history are cleared. Ctrl-C stops the development process.
 
 ## macOS downloads
 
-Choose `findout-client-macos-aarch64.zip` for Apple Silicon or
-`findout-client-macos-x86_64.zip` for Intel. These ZIPs contain the actual
-`FindOut.app` bundle. The similarly named files without `.zip` are internal
-updater executables, not the app download; renaming one to `.app` will not work.
-Extract and open `FindOut.app`, then
-use the installation dialog to install for your account. You can also move the
-app to `~/Applications` yourself. The menu-bar icon opens the popup.
+Choose `findout-client-macos-aarch64.dmg` for Apple Silicon or
+`findout-client-macos-x86_64.dmg` for Intel. Open the DMG, open `FindOut.app`,
+then click **Install** to install for your account. After installation, eject
+the disk image. The menu-bar icon or Option+Space opens the popup.
+
+The similarly named files without `.dmg` are internal updater executables,
+not the app download. ZIP downloads on older releases also contain `FindOut.app`.
 
 These builds have ad-hoc executable signatures, but are not Developer ID signed
 or notarized. macOS may block the first launch; use the system's Privacy &

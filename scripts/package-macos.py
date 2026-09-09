@@ -4,13 +4,11 @@ import argparse
 import pathlib
 import plistlib
 import shutil
-import stat
 import subprocess
 import sys
 import tempfile
 import time
 import tomllib
-import zipfile
 
 
 def package(binary: pathlib.Path, output: pathlib.Path, arch: str) -> pathlib.Path:
@@ -26,16 +24,46 @@ def package(binary: pathlib.Path, output: pathlib.Path, arch: str) -> pathlib.Pa
     (contents / "Info.plist").write_text(metadata)
     updater = output / f"findout-client-macos-{arch}"
     shutil.copy2(executable, updater)
-    archive = output / f"findout-client-macos-{arch}.zip"
-    with zipfile.ZipFile(archive, "w", compression=zipfile.ZIP_DEFLATED) as bundle:
-        for path in sorted((output / "FindOut.app").rglob("*")):
-            bundle.write(path, path.relative_to(output))
-    # ZIP preserves the executable bit so Finder can launch the extracted app.
-    with zipfile.ZipFile(archive) as bundle:
-        mode = bundle.getinfo("FindOut.app/Contents/MacOS/findout-client").external_attr >> 16
-        if not mode & stat.S_IXUSR:
-            raise RuntimeError("Packaged app is not executable")
-    return archive
+    return disk_image(output / "FindOut.app", output, arch)
+
+
+def disk_image(app: pathlib.Path, output: pathlib.Path, arch: str) -> pathlib.Path:
+    output.mkdir(parents=True, exist_ok=True)
+    image = (output / f"findout-client-macos-{arch}.dmg").resolve()
+    with tempfile.TemporaryDirectory(prefix="findout-dmg-stage-") as directory:
+        stage = pathlib.Path(directory)
+        shutil.copytree(app, stage / "FindOut.app", symlinks=True)
+        (stage / "Install FindOut.txt").write_text(
+            "Open FindOut.app, then click Install to install for your account.\n"
+            "After installation, eject this disk image.\n"
+            "FindOut lives in your menu bar. Press Option+Space to open it.\n"
+        )
+        subprocess.run(["hdiutil", "create", "-srcfolder", str(stage),
+                        "-volname", "FindOut", "-fs", "HFS+", "-format", "UDZO",
+                        "-ov", str(image)], check=True)
+    subprocess.run(["hdiutil", "verify", str(image)], check=True)
+    return image
+
+
+def verify_disk_image(image: pathlib.Path, app: pathlib.Path, launch: bool) -> None:
+    """Validate the delivered, read-only volume rather than just the staging app."""
+    with tempfile.TemporaryDirectory(prefix="findout-dmg-mount-") as directory:
+        mount = pathlib.Path(directory)
+        subprocess.run(["hdiutil", "attach", str(image), "-readonly", "-nobrowse",
+                        "-mountpoint", str(mount)], check=True)
+        try:
+            for relative in ["Contents/Info.plist", "Contents/MacOS/findout-client"]:
+                if (mount / "FindOut.app" / relative).read_bytes() != (app / relative).read_bytes():
+                    raise RuntimeError(f"Disk image changed {relative}")
+            executable = mount / "FindOut.app/Contents/MacOS/findout-client"
+            if not executable.stat().st_mode & 0o111:
+                raise RuntimeError("Mounted app is not executable")
+            subprocess.run(["codesign", "--verify", "--strict", str(executable)], check=True)
+            if launch:
+                smoke_test(mount)
+        finally:
+            subprocess.run(["hdiutil", "detach", str(mount)], check=True)
+    print("Mounted DMG app content, executable permissions and signature verified")
 
 
 def smoke_test(output: pathlib.Path) -> None:
@@ -62,14 +90,26 @@ def smoke_test(output: pathlib.Path) -> None:
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--app", type=pathlib.Path, help="Repackage an existing app without changing its binary")
+    parser.add_argument("--expected-version", help="Require this version when repackaging an app")
     parser.add_argument("--binary", type=pathlib.Path, default=pathlib.Path("target/release/findout-client"))
     parser.add_argument("--output", type=pathlib.Path, default=pathlib.Path("dist"))
     parser.add_argument("--arch", required=True, choices=["aarch64", "x86_64"])
     parser.add_argument("--smoke-test", action="store_true",
                         help="Launch briefly; use only in a disposable macOS GUI session")
     args = parser.parse_args()
-    if args.smoke_test and sys.platform != "darwin":
-        parser.error("--smoke-test requires macOS")
-    print(package(args.binary, args.output, args.arch))
-    if args.smoke_test:
-        smoke_test(args.output)
+    if sys.platform != "darwin":
+        parser.error("DMG packaging requires macOS")
+    if args.app:
+        metadata = plistlib.loads((args.app / "Contents/Info.plist").read_bytes())
+        if metadata.get("CFBundleIdentifier") != "app.findout.client":
+            parser.error("Expected a FindOut app bundle")
+        if args.expected_version and metadata.get("CFBundleShortVersionString") != args.expected_version:
+            parser.error("App version does not match the requested release")
+        app = args.app
+        image = disk_image(app, args.output, args.arch)
+    else:
+        image = package(args.binary, args.output, args.arch)
+        app = args.output / "FindOut.app"
+    verify_disk_image(image, app, args.smoke_test)
+    print(image)
