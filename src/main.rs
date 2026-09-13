@@ -35,7 +35,7 @@ const TRIAL_DEVICE_MESSAGE: &[u8] = b"findout/trial/device/v1";
 const MAX_QUERY_CHARS: usize = 4_000;
 const MAX_PREVIOUS_TURNS: usize = 4;
 const MAX_TURN_CHARS: usize = 2_000;
-const FEEDBACK_EMAIL: &str = "moeg-5@agentmail.to";
+const MAX_THREAD_TURNS: usize = 100;
 // Fits one base64-encoded image plus JSON below Vercel's 4.5 MB request limit.
 const MAX_IMAGE_BYTES: usize = 3_000_000;
 const MAX_IMAGE_BASE64_CHARS: usize = MAX_IMAGE_BYTES.div_ceil(3) * 4;
@@ -56,7 +56,63 @@ const THEME_DARK: i32 = 1;
 const THEME_RETRO: i32 = 2;
 
 slint::slint! {
-    import { Palette, ScrollView, Button, CheckBox } from "std-widgets.slint";
+    import { Palette, ScrollView, Button, CheckBox, LineEdit, TextEdit } from "std-widgets.slint";
+
+    export component FeedbackWindow inherits Window {
+        title: "FindOut feedback";
+        width: 520px;
+        height: 470px;
+        in-out property <string> message;
+        in-out property <string> email;
+        in-out property <bool> include-license: false;
+        in property <bool> busy: false;
+        in property <string> status;
+        callback send();
+        callback copy-draft();
+        callback dismiss();
+        VerticalLayout {
+            padding: 20px;
+            spacing: 10px;
+            Text { text: "To: moeg-5@agentmail.to"; wrap: word-wrap; }
+            TextEdit { text <=> root.message; enabled: !root.busy; }
+            Text { text: "Email address (optional, if you’d like a reply)"; }
+            LineEdit { text <=> root.email; enabled: !root.busy; }
+            CheckBox { text: "Include license and installation IDs for support"; checked <=> root.include-license; enabled: !root.busy; }
+            Text { text: "Sends your feedback, optional reply email and app version (0.1.5). Optional support IDs help us find your license. Your chats and images stay private."; wrap: word-wrap; font-size: 12px; }
+            Text { text: root.status; wrap: word-wrap; font-size: 12px; }
+            HorizontalLayout {
+                Button { text: "Close"; clicked => { root.dismiss(); } }
+                Button { text: "Copy draft"; clicked => { root.copy-draft(); } }
+                Button { text: root.busy ? "Sending…" : "Send"; enabled: !root.busy && !root.message.is-empty; clicked => { root.send(); } }
+            }
+        }
+    }
+
+    export component HistoryWindow inherits Window {
+        title: "FindOut recent conversations";
+        width: 620px;
+        height: 540px;
+        in property <[string]> titles;
+        in property <string> transcript;
+        in property <int> selected: -1;
+        callback select(int);
+        callback resume();
+        callback clear-history();
+        VerticalLayout {
+            padding: 16px;
+            spacing: 8px;
+            Text { text: "RECENT · LAST FIVE · ON THIS DEVICE"; font-size: 12px; }
+            for title[index] in root.titles: Button {
+                text: title;
+                clicked => { root.select(index); }
+            }
+            TextEdit { text: root.transcript; read-only: true; wrap: word-wrap; vertical-stretch: 1; }
+            HorizontalLayout {
+                Button { text: "Clear history"; clicked => { root.clear-history(); } }
+                Button { text: "Continue thread"; enabled: root.selected >= 0; clicked => { root.resume(); } }
+            }
+        }
+    }
 
     export component FindOutWindow inherits Window {
         title: "FindOut";
@@ -69,7 +125,7 @@ slint::slint! {
 
         in property <bool> activated: false;
         in property <bool> busy: false;
-        in property <bool> feedback-copied: false;
+
         in property <bool> has-image: false;
         in property <bool> can-force-search: false;
         in property <string> answer: "";
@@ -104,7 +160,9 @@ slint::slint! {
         callback paste-image();
         callback clear-image();
         callback copy-answer();
-        callback copy-feedback();
+        callback open-feedback();
+        callback open-history();
+        callback new-conversation();
         callback open-releases();
         callback escape();
 
@@ -131,6 +189,16 @@ slint::slint! {
                         font-size: 13px;
                         font-weight: 600;
                         horizontal-stretch: 1;
+                    }
+                    if root.activated: Button {
+                        text: "Recent";
+                        enabled: !root.busy;
+                        clicked => { root.open-history(); }
+                    }
+                    if root.activated: Button {
+                        text: "New";
+                        enabled: !root.busy;
+                        clicked => { root.new-conversation(); }
                     }
                     Text {
                         text: !root.activated ? "ACTIVATE ONCE" :
@@ -380,19 +448,19 @@ slint::slint! {
                 HorizontalLayout {
                     height: 18px;
                     Rectangle {
-                        width: 193px;
+                        width: 62px;
                         Text {
                             width: parent.width;
                             height: parent.height;
                             horizontal-alignment: left;
-                            text: root.feedback-copied ? "copied to clipboard" : "feedback: moeg-5@agentmail.to";
+                            text: "Feedback";
                             color: feedback-area.has-hover ? root.accent : root.muted_text;
                             font-size: 10px;
                             vertical-alignment: center;
                         }
                         feedback-area := TouchArea {
                             mouse-cursor: pointer;
-                            clicked => { root.copy-feedback(); }
+                            clicked => { root.open-feedback(); }
                         }
                     }
                     Text {
@@ -558,19 +626,127 @@ struct ConversationTurn {
     answer: String,
 }
 
+#[derive(Clone, Serialize, Deserialize)]
+struct HistoryTurn {
+    query: String,
+    answer: String,
+    searched: bool,
+    had_image: bool,
+}
+
+impl HistoryTurn {
+    fn display(&self) -> String {
+        format!(
+            "{}\n{}{}{}",
+            self.query,
+            if self.searched { "🌐 " } else { "" },
+            if self.had_image { "📷 " } else { "" },
+            self.answer
+        )
+    }
+}
+
 #[derive(Default)]
 struct Conversation {
     turns: Vec<ConversationTurn>,
     last_request: Option<AskRequest>,
+    recent: Vec<Vec<HistoryTurn>>,
+    active: Option<usize>,
+    history_path: Option<std::path::PathBuf>,
+    revision: u64,
 }
 
 impl Conversation {
+    fn load(origin: &str) -> Self {
+        use sha2::Digest;
+        let Ok(root) = lifecycle::root() else {
+            return Self::default();
+        };
+        let hash = Sha256::digest(origin.as_bytes());
+        let filename = format!(
+            "history-{}.json",
+            base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(hash)
+        );
+        let path = root.join(filename);
+        let recent = (|| -> Option<Vec<Vec<HistoryTurn>>> {
+            let file = std::fs::File::open(&path).ok()?;
+            if file.metadata().ok()?.len() > 70_000_000 {
+                return None;
+            }
+            let threads: Vec<Vec<HistoryTurn>> = serde_json::from_reader(file).ok()?;
+            if threads.len() > 5
+                || threads.iter().any(|t| {
+                    t.is_empty()
+                        || t.len() > MAX_THREAD_TURNS
+                        || t.iter().any(|v| {
+                            v.query.chars().count() > MAX_QUERY_CHARS
+                                || v.answer.len() > MAX_RESPONSE_BYTES as usize
+                        })
+                })
+            {
+                return None;
+            }
+            Some(threads)
+        })()
+        .unwrap_or_default();
+        Self {
+            recent,
+            history_path: Some(path),
+            ..Self::default()
+        }
+    }
+
+    fn save_history(&self) -> Result<(), String> {
+        use std::io::Write;
+        let Some(path) = &self.history_path else {
+            return Ok(());
+        };
+        if self.recent.is_empty() {
+            return match std::fs::remove_file(path) {
+                Ok(()) => Ok(()),
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+                Err(_) => Err("Could not remove saved history".into()),
+            };
+        }
+        let parent = path.parent().ok_or("History directory unavailable")?;
+        std::fs::create_dir_all(parent).map_err(|_| "Could not create history directory")?;
+        let mut nonce = [0u8; 8];
+        getrandom::fill(&mut nonce).map_err(|_| "Could not save history")?;
+        let temp = path.with_extension(format!("{:x}.tmp", u64::from_ne_bytes(nonce)));
+        let result = (|| -> Result<(), Box<dyn std::error::Error>> {
+            let mut options = std::fs::OpenOptions::new();
+            options.write(true).create_new(true);
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::OpenOptionsExt;
+                options.mode(0o600);
+            }
+            let mut file = options.open(&temp)?;
+            file.write_all(&serde_json::to_vec(&self.recent)?)?;
+            file.sync_all()?;
+            std::fs::rename(&temp, path)?;
+            Ok(())
+        })();
+        if result.is_err() {
+            let _ = std::fs::remove_file(&temp);
+        }
+        result.map_err(|_| "History is available this session but could not be saved".into())
+    }
+
     fn prepare(
         &mut self,
         text: &str,
         force_search: bool,
         image: Option<ImagePayload>,
     ) -> Result<AskRequest, String> {
+        if !force_search
+            && self
+                .active
+                .and_then(|i| self.recent.get(i))
+                .is_some_and(|t| t.len() >= MAX_THREAD_TURNS)
+        {
+            return Err("This thread has 100 answers. Start a new conversation; this thread stays in Recent.".into());
+        }
         let request = if force_search {
             let mut request = self.last_request.clone().ok_or("Enter a question")?;
             request.force_search = true;
@@ -588,7 +764,35 @@ impl Conversation {
         Ok(request)
     }
 
+    #[cfg(test)]
     fn complete(&mut self, request: &AskRequest, answer: &str) {
+        self.complete_with_sources(request, answer, false);
+    }
+
+    fn complete_with_sources(&mut self, request: &AskRequest, answer: &str, searched: bool) {
+        self.revision += 1;
+        let index = match self.active {
+            Some(index) => index,
+            None => {
+                if self.recent.len() == 5 {
+                    self.recent.remove(0);
+                }
+                self.recent.push(Vec::new());
+                let index = self.recent.len() - 1;
+                self.active = Some(index);
+                index
+            }
+        };
+        let thread = &mut self.recent[index];
+        if request.force_search && thread.last().is_some_and(|t| t.query == request.query) {
+            thread.pop();
+        }
+        thread.push(HistoryTurn {
+            query: request.query.clone(),
+            answer: answer.into(),
+            searched,
+            had_image: request.image.is_some(),
+        });
         // Rebuild from the original context so SEARCH WEB replaces its answer.
         self.turns = request.previous_turns.clone();
         self.turns.push(ConversationTurn {
@@ -600,7 +804,43 @@ impl Conversation {
     }
 
     fn clear(&mut self) {
-        *self = Self::default();
+        self.turns.clear();
+        self.last_request = None;
+        self.active = None;
+    }
+
+    fn transcript(&self, index: usize) -> String {
+        self.recent
+            .get(index)
+            .map(|t| {
+                t.iter()
+                    .map(HistoryTurn::display)
+                    .collect::<Vec<_>>()
+                    .join("\n\n")
+            })
+            .unwrap_or_default()
+    }
+
+    fn resume(&mut self, index: usize) -> bool {
+        if index >= self.recent.len() {
+            return false;
+        }
+        self.revision += 1;
+        let thread = self.recent.remove(index);
+        self.turns = thread
+            .iter()
+            .rev()
+            .take(MAX_PREVIOUS_TURNS)
+            .rev()
+            .map(|t| ConversationTurn {
+                query: t.query.chars().take(MAX_TURN_CHARS).collect(),
+                answer: t.answer.chars().take(MAX_TURN_CHARS).collect(),
+            })
+            .collect();
+        self.recent.push(thread);
+        self.active = Some(self.recent.len() - 1);
+        self.last_request = None; // Images are deliberately not retained in history.
+        true
     }
 }
 
@@ -1394,15 +1634,26 @@ fn query(
                 ui.set_roundtrip(roundtrip.into());
                 match result {
                     Ok(answer) => {
+                        let mut history_warning = None;
                         if let Ok(mut conversation) = conversation.lock() {
-                            conversation.complete(&request, &answer.body.answer);
+                            conversation.complete_with_sources(
+                                &request,
+                                &answer.body.answer,
+                                answer.body.searched,
+                            );
+                            history_warning = conversation.save_history().err();
                         }
                         if let Ok(mut image) = attached_image.lock() {
                             *image = None;
                         }
                         ui.set_has_image(false);
                         ui.set_question("".into());
-                        ui.set_answer(answer.body.answer.into());
+                        let transcript = conversation
+                            .lock()
+                            .ok()
+                            .and_then(|c| c.active.map(|i| c.transcript(i)))
+                            .unwrap_or(answer.body.answer);
+                        ui.set_answer(transcript.into());
                         ui.set_can_force_search(!answer.body.searched);
                         ui.set_status(
                             answer
@@ -1419,6 +1670,9 @@ fn query(
                                 })
                                 .into(),
                         );
+                        if let Some(warning) = history_warning {
+                            ui.set_status(warning.into());
+                        }
                     }
                     Err(error) => {
                         if error == "Activation required" {
@@ -1510,27 +1764,6 @@ fn copy_answer(answer: String, ui: Weak<FindOutWindow>) {
         } else {
             ui.set_status("Copied".into());
         }
-    }
-}
-
-fn copy_feedback(ui: Weak<FindOutWindow>, timer: &Timer) {
-    let Some(window) = ui.upgrade() else {
-        return;
-    };
-    match write_clipboard_text(FEEDBACK_EMAIL.to_owned()) {
-        Ok(()) => {
-            window.set_feedback_copied(true);
-            timer.start(
-                slint::TimerMode::SingleShot,
-                Duration::from_secs(2),
-                move || {
-                    if let Some(ui) = ui.upgrade() {
-                        ui.set_feedback_copied(false);
-                    }
-                },
-            );
-        }
-        Err(error) => window.set_status(error.into()),
     }
 }
 
@@ -2021,7 +2254,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let attached_image = Arc::new(Mutex::new(None::<ImagePayload>));
-    let conversation = Arc::new(Mutex::new(Conversation::default()));
+    let conversation = Arc::new(Mutex::new(Conversation::load(&origin)));
     let generation = Arc::new(Mutex::new(0_u64));
     let request_generation = Arc::new(Mutex::new(0_u64));
     let focused = Arc::new(AtomicBool::new(false));
@@ -2168,10 +2401,212 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     });
 
-    ui.on_copy_feedback({
+    let feedback = FeedbackWindow::new()?;
+    ui.on_open_feedback({
+        let feedback = feedback.as_weak();
+        move || {
+            if let Some(window) = feedback.upgrade() {
+                let _ = window.show();
+                window.window().with_winit_window(|w| w.focus_window());
+            }
+        }
+    });
+    feedback.on_dismiss({
+        let window = feedback.as_weak();
+        move || {
+            if let Some(w) = window.upgrade() {
+                let _ = w.hide();
+            }
+        }
+    });
+    feedback.on_copy_draft({
+        let window = feedback.as_weak();
+        move || {
+            if let Some(w) = window.upgrade() {
+                let text = format!("{}\n\nReply email: {}", w.get_message(), w.get_email());
+                w.set_status(match write_clipboard_text(text) {
+                    Ok(()) => "Draft copied. You can paste it into a local file.".into(),
+                    Err(e) => e.into(),
+                });
+            }
+        }
+    });
+    feedback.on_send({
+        let window = feedback.as_weak();
+        let origin = origin.clone();
+        move || {
+            let Some(w) = window.upgrade() else { return; };
+            if w.get_busy() { return; }
+            let message = w.get_message().trim().to_owned();
+            let email = w.get_email().trim().to_owned();
+            if message.is_empty() || message.chars().count() > 4000 { w.set_status("Write feedback up to 4,000 characters.".into()); return; }
+            if email.len() > 254 || email.contains(['\r', '\n']) { w.set_status("Enter a valid email address.".into()); return; }
+            let include = w.get_include_license();
+            w.set_busy(true);
+            w.set_status("Sending…".into());
+            let window = window.clone();
+            let origin = origin.clone();
+            std::thread::spawn(move || {
+                let mut request = agent().post(&format!("{origin}/v1/feedback")).timeout(Duration::from_secs(15)).set("X-FindOut-Protocol", PROTOCOL_VERSION);
+                if include { if let Ok(Some(t)) = token(&origin) { request = request.set("Authorization", &format!("Bearer {t}")); } }
+                let result: Result<HttpResponse<serde_json::Value>, RequestError> = post_json(request, &serde_json::json!({
+                    "message": message, "email": email, "include_license": include,
+                    "client": format!("desktop/{} ({})", CURRENT_VERSION, std::env::consts::OS),
+                }));
+                let _ = window.upgrade_in_event_loop(move |w| {
+                    w.set_busy(false);
+                    match result {
+                        Ok(_) => { w.set_message("".into()); w.set_status("Feedback sent. Thank you.".into()); }
+                        Err(error) => w.set_status(format!("{} Your draft is kept here; Copy draft saves it to your clipboard.", quota_error(error)).into()),
+                    }
+                });
+            });
+        }
+    });
+
+    let history_window = HistoryWindow::new()?;
+    let history_revision = std::rc::Rc::new(std::cell::Cell::new(0u64));
+    ui.on_open_history({
+        let revision = history_revision.clone();
+        let window = history_window.as_weak();
+        let conversation = conversation.clone();
+        move || {
+            if let Some(w) = window.upgrade() {
+                let c = conversation.lock().unwrap();
+                revision.set(c.revision);
+                let titles: Vec<slint::SharedString> = c
+                    .recent
+                    .iter()
+                    .rev()
+                    .map(|t| {
+                        let title: String = t
+                            .first()
+                            .map(|t| t.query.chars().take(65).collect())
+                            .unwrap_or_default();
+                        format!(
+                            "{} · {} {}",
+                            title,
+                            t.len(),
+                            if t.len() == 1 { "answer" } else { "answers" }
+                        )
+                        .into()
+                    })
+                    .collect();
+                w.set_titles(std::rc::Rc::new(slint::VecModel::from(titles)).into());
+                w.set_selected(-1);
+                w.set_transcript(
+                    "Select a conversation. Text is saved on this device; images are not saved."
+                        .into(),
+                );
+                let _ = w.show();
+            }
+        }
+    });
+    history_window.on_select({
+        let revision = history_revision.clone();
+        let window = history_window.as_weak();
+        let conversation = conversation.clone();
+        move |i| {
+            if let Some(w) = window.upgrade() {
+                let c = conversation.lock().unwrap();
+                if c.revision != revision.get() {
+                    w.set_selected(-1);
+                    w.set_transcript(
+                        "History changed. Close this window and reopen Recent.".into(),
+                    );
+                    return;
+                }
+                if i < 0 {
+                    return;
+                }
+                if let Some(index) = c.recent.len().checked_sub(i as usize + 1) {
+                    w.set_selected(index as i32);
+                    w.set_transcript(c.transcript(index).into());
+                }
+            }
+        }
+    });
+    history_window.on_resume({
+        let revision = history_revision.clone();
+        let window = history_window.as_weak();
         let ui = ui.as_weak();
-        let timer = Timer::default();
-        move || copy_feedback(ui.clone(), &timer)
+        let conversation = conversation.clone();
+        let generation = generation.clone();
+        let request_generation = request_generation.clone();
+        let attached_image = attached_image.clone();
+        move || {
+            if let (Some(w), Some(ui)) = (window.upgrade(), ui.upgrade()) {
+                if ui.get_busy() {
+                    return;
+                }
+                let mut c = conversation.lock().unwrap();
+                if c.revision != revision.get() {
+                    w.set_selected(-1);
+                    w.set_transcript(
+                        "History changed. Close this window and reopen Recent.".into(),
+                    );
+                    return;
+                }
+                if c.resume(w.get_selected() as usize) {
+                    next_generation(&generation);
+                    next_generation(&request_generation);
+                    ui.set_answer(c.transcript(c.active.unwrap()).into());
+                    ui.set_can_force_search(false);
+                    ui.set_question("".into());
+                    ui.set_has_image(false);
+                    *attached_image.lock().unwrap() = None;
+                    let _ = w.hide();
+                    let _ = ui.show();
+                    ui.window().with_winit_window(|w| w.focus_window());
+                }
+            }
+        }
+    });
+    history_window.on_clear_history({
+        let window = history_window.as_weak();
+        let ui = ui.as_weak();
+        let conversation = conversation.clone();
+        move || {
+            if let (Some(w), Some(ui)) = (window.upgrade(), ui.upgrade()) {
+                if ui.get_busy() {
+                    return;
+                }
+                let mut c = conversation.lock().unwrap();
+                c.clear();
+                c.recent.clear();
+                c.revision += 1;
+                if let Err(error) = c.save_history() {
+                    w.set_transcript(error.into());
+                    return;
+                }
+                w.set_titles(
+                    std::rc::Rc::new(slint::VecModel::<slint::SharedString>::default()).into(),
+                );
+                w.set_selected(-1);
+                w.set_transcript("History cleared.".into());
+                ui.set_answer("".into());
+                ui.set_can_force_search(false);
+            }
+        }
+    });
+    ui.on_new_conversation({
+        let ui = ui.as_weak();
+        let conversation = conversation.clone();
+        let attached_image = attached_image.clone();
+        move || {
+            if let Some(ui) = ui.upgrade() {
+                if ui.get_busy() {
+                    return;
+                }
+                conversation.lock().unwrap().clear();
+                *attached_image.lock().unwrap() = None;
+                ui.set_answer("".into());
+                ui.set_question("".into());
+                ui.set_has_image(false);
+                ui.set_can_force_search(false);
+                ui.set_status("New conversation".into());
+            }
+        }
     });
 
     let install_weak = install_dialog.as_weak();
@@ -2386,6 +2821,171 @@ mod tests {
     use image::GenericImageView;
 
     #[test]
+    fn recent_threads_preserve_full_text_sources_and_survive_reset() {
+        let mut c = Conversation::default();
+        let answer = "ä".repeat(3000);
+        for i in 0..8 {
+            let request = c.prepare(&format!("q{i}"), false, None).unwrap();
+            c.complete_with_sources(&request, &answer, i == 1);
+        }
+        assert_eq!(c.recent[0].len(), 8);
+        assert_eq!(c.recent[0][0].answer, answer);
+        assert!(c.transcript(0).contains("🌐"));
+        c.clear();
+        assert_eq!(c.recent[0].len(), 8);
+        assert!(c.resume(0));
+        assert_eq!(c.turns.len(), 4);
+        assert_eq!(c.turns[0].query, "q4");
+        assert_eq!(c.turns[0].answer.chars().count(), 2000);
+        for i in 1..6 {
+            c.clear();
+            let r = c.prepare(&format!("thread{i}"), false, None).unwrap();
+            c.complete(&r, "answer");
+        }
+        assert_eq!(c.recent.len(), 5);
+        assert_eq!(c.recent[0][0].query, "thread1");
+    }
+
+    #[test]
+    fn history_retry_replaces_answer_and_saved_history_contains_no_image_or_token() {
+        let mut c = Conversation::default();
+        let r = c
+            .prepare(
+                "image?",
+                false,
+                Some(ImagePayload {
+                    mime_type: "image/png".into(),
+                    data: "secret-image-bytes".into(),
+                }),
+            )
+            .unwrap();
+        c.complete_with_sources(&r, "initial", false);
+        let retry = c.prepare("", true, None).unwrap();
+        c.complete_with_sources(&retry, "verified", true);
+        assert_eq!(c.recent[0].len(), 1);
+        assert!(c.transcript(0).contains("🌐 📷 verified"));
+        let dir = std::env::temp_dir().join(format!("findout-history-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("history.json");
+        c.history_path = Some(path.clone());
+        c.save_history().unwrap();
+        let saved = std::fs::read_to_string(&path).unwrap();
+        assert!(!saved.contains("secret-image-bytes"));
+        let decoded: Vec<Vec<HistoryTurn>> = serde_json::from_str(&saved).unwrap();
+        assert!(decoded[0][0].had_image && decoded[0][0].searched);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+                0o600
+            );
+        }
+        c.recent.clear();
+        c.save_history().unwrap();
+        assert!(!path.exists());
+        std::fs::remove_dir(dir).unwrap();
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    #[ignore = "requires a dedicated disposable X11 session"]
+    fn v015_dialogs_ui() {
+        use winit::platform::x11::EventLoopBuilderExtX11;
+        let mut event_loop =
+            winit::event_loop::EventLoop::<slint::winit_030::SlintEvent>::with_user_event();
+        event_loop.with_x11().with_any_thread(true);
+        slint::BackendSelector::new()
+            .backend_name("winit-software".into())
+            .with_winit_event_loop_builder(event_loop)
+            .select()
+            .unwrap();
+        let ui = FindOutWindow::new().unwrap();
+        ui.set_activated(true);
+        ui.set_answer("How do I update Linux?\n🌐 Use the package manager.\n\nWhat about this screenshot?\n📷 Open Software Update in Settings.".into());
+        let feedback = FeedbackWindow::new().unwrap();
+        feedback.set_message("I’m having trouble activating FindOut.".into());
+        let history = HistoryWindow::new().unwrap();
+        history.set_titles(
+            std::rc::Rc::new(slint::VecModel::from(vec![
+                "How do I update Linux? · 2 answers".into(),
+                "Where is Settings? · 1 answer".into(),
+            ]))
+            .into(),
+        );
+        history.set_transcript(ui.get_answer());
+        ui.on_open_feedback({
+            let w = feedback.as_weak();
+            move || {
+                w.upgrade().unwrap().show().unwrap();
+            }
+        });
+        ui.on_open_history({
+            let w = history.as_weak();
+            move || {
+                w.upgrade().unwrap().show().unwrap();
+            }
+        });
+        feedback.on_send({
+            let w = feedback.as_weak();
+            move || {
+                w.upgrade()
+                    .unwrap()
+                    .set_status("Feedback sent. Test only; no email was sent.".into());
+            }
+        });
+        feedback.on_dismiss({
+            let w = feedback.as_weak();
+            move || {
+                w.upgrade().unwrap().hide().unwrap();
+            }
+        });
+        ui.show().unwrap();
+        Timer::single_shot(Duration::from_secs(1), {
+            let ui = ui.as_weak();
+            move || {
+                ui.upgrade().unwrap().invoke_open_history();
+            }
+        });
+        Timer::single_shot(Duration::from_secs(2), {
+            let history = history.as_weak();
+            let ui = ui.as_weak();
+            move || {
+                assert!(history.upgrade().unwrap().window().is_visible());
+                if std::env::var_os("FINDOUT_UI_CAPTURE").is_some() {
+                    assert!(Command::new("import")
+                        .args(["-window", "root", "/tmp/findout-v015-history.png"])
+                        .status()
+                        .unwrap()
+                        .success());
+                }
+                history.upgrade().unwrap().hide().unwrap();
+                ui.upgrade().unwrap().invoke_open_feedback();
+            }
+        });
+        Timer::single_shot(Duration::from_secs(3), {
+            let feedback = feedback.as_weak();
+            move || {
+                let w = feedback.upgrade().unwrap();
+                assert!(w.window().is_visible());
+                w.invoke_send();
+                assert!(w.get_status().contains("Feedback sent"));
+            }
+        });
+        Timer::single_shot(Duration::from_secs(4), || {
+            if std::env::var_os("FINDOUT_UI_CAPTURE").is_some() {
+                assert!(Command::new("import")
+                    .args(["-window", "root", "/tmp/findout-v015-feedback.png"])
+                    .status()
+                    .unwrap()
+                    .success());
+            }
+            slint::quit_event_loop().unwrap();
+        });
+        slint::run_event_loop_until_quit().unwrap();
+    }
+
+    #[test]
     fn followups_serialize_successful_turns_in_order() {
         let mut conversation = Conversation::default();
         let first = conversation
@@ -2474,61 +3074,6 @@ mod tests {
             .unwrap()
             .previous_turns
             .is_empty());
-    }
-
-    // Run only in a disposable X11 and D-Bus session, like clipboard_copy below.
-    #[cfg(target_os = "linux")]
-    #[test]
-    #[ignore = "requires an isolated X11 display, xdotool and xclip"]
-    fn feedback_click_copies_and_resets() {
-        use winit::platform::x11::EventLoopBuilderExtX11;
-        let mut event_loop =
-            winit::event_loop::EventLoop::<slint::winit_030::SlintEvent>::with_user_event();
-        event_loop.with_x11().with_any_thread(true);
-        slint::BackendSelector::new()
-            .backend_name("winit-software".into())
-            .with_winit_event_loop_builder(event_loop)
-            .select()
-            .unwrap();
-        let ui = FindOutWindow::new().unwrap();
-        ui.set_activated(true);
-        ui.set_answer("Use Windows Update in Settings.".into());
-        ui.on_copy_feedback({
-            let ui = ui.as_weak();
-            let timer = Timer::default();
-            move || copy_feedback(ui.clone(), &timer)
-        });
-        ui.show().unwrap();
-        let weak = ui.as_weak();
-        let reader = std::thread::spawn(move || {
-            std::thread::sleep(Duration::from_millis(300));
-            let window = Command::new("xdotool")
-                .args(["search", "--name", "^FindOut$"])
-                .output()
-                .unwrap();
-            let id = String::from_utf8(window.stdout).unwrap();
-            let id = id.lines().next().unwrap();
-            let click = Command::new("xdotool")
-                .args(["mousemove", "--window", id, "120", "287", "click", "1"])
-                .status()
-                .unwrap();
-            std::thread::sleep(Duration::from_millis(250));
-            weak.upgrade_in_event_loop(|ui| assert!(ui.get_feedback_copied()))
-                .unwrap();
-            let copied = Command::new("timeout")
-                .args(["5s", "xclip", "-selection", "clipboard", "-out"])
-                .output()
-                .unwrap();
-            std::thread::sleep(Duration::from_millis(2200));
-            slint::quit_event_loop().unwrap();
-            (click, copied)
-        });
-        slint::run_event_loop_until_quit().unwrap();
-        let (click, copied) = reader.join().unwrap();
-        assert!(click.success());
-        assert!(copied.status.success());
-        assert_eq!(String::from_utf8(copied.stdout).unwrap(), FEEDBACK_EMAIL);
-        assert!(!ui.get_feedback_copied());
     }
 
     // dbus-run-session --config-file=tests/dbus-session.conf -- xvfb-run -a \

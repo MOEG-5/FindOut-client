@@ -26,6 +26,7 @@ export function safeBody(body) {
 export async function upstream(path, { body, token } = {}) {
   const response = await fetch(`${backendOrigin()}${path}`, {
     method: "POST",
+    signal: AbortSignal.timeout(60000),
     headers: {
       "Content-Type": "application/json",
       "X-FindOut-Protocol": PROTOCOL_VERSION,

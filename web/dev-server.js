@@ -3,11 +3,12 @@ import { readFile } from "node:fs/promises";
 import { extname, join, normalize } from "node:path";
 import activate from "./api/activate.js";
 import query from "./api/query.js";
+import feedback from "./api/feedback.js";
 import logout from "./api/logout.js";
 
 const root = new URL(".", import.meta.url).pathname;
 process.env.NODE_ENV ||= "development";
-const handlers = { "/api/activate": activate, "/api/query": query, "/api/logout": logout };
+const handlers = { "/api/feedback": feedback, "/api/activate": activate, "/api/query": query, "/api/logout": logout };
 const types = { ".html": "text/html", ".js": "text/javascript", ".css": "text/css", ".svg": "image/svg+xml", ".webmanifest": "application/manifest+json" };
 
 createServer(async (request, response) => {

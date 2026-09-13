@@ -8,3 +8,4 @@ gen/
 !.env.example
 *.pem
 *.key
+.vercel

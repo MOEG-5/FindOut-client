@@ -29,27 +29,28 @@ No API keys or separate accounts are needed.
 
 FindOut lives in your system tray and can be opened whenever you need it.
 
-An installable mobile web client also lives in [`web/`](web/). It keeps the five
-most recent interactions on the device and sends the newest four as follow-up
-context, matching the desktop conversation contract. Use the hosted PWA at
+An installable mobile web client also lives in [`web/`](web/). Both clients keep five recent conversations on the device, including full
+threads and per-answer 🌐 web-search / 📷 image indicators. Only the newest four
+turns from the active thread are sent as follow-up context. Use the hosted PWA at
 [findout-pwa.vercel.app](https://findout-pwa.vercel.app).
 
 <img src="docs/findout-screenshot.png" alt="FindOut in its retro theme, displaying an example answer and a follow-up question." width="560">
 
 ## For developers
 
-FindOut is a small native Slint application. Provider keys, model selection, search, trial limits, and other service logic live on the FindOut server. The client stores only a revocable installation token in the operating system keychain.
+FindOut is a small native Slint application. Provider keys, model selection, search, trial limits, and other service logic live on the FindOut server. The client keeps the installation token in the operating system keychain and recent conversation text in its local application-data directory.
 
 Licensed under [GPL-3.0-only](LICENSE).
 
 The current desktop client is a small native Slint application for Linux, Windows, and macOS. Provider keys and model/search logic stay on the FindOut server; the
-client stores only a revocable installation token in the OS keychain.
+client keeps its installation token in the OS keychain.
 
 ### Mobile PWA
 
-The PWA is a dependency-free static client with three small Vercel Functions.
+The PWA is a dependency-free static client with four small Vercel Functions.
 Those functions proxy the existing `/v1/activate` and `/v1/query` contract so the
-backend needs no CORS changes, and move the returned installation token into a
+backend needs no CORS changes. Feedback is proxied to `/v1/feedback`, including
+the cookie only when the user opts to share support IDs. Activation functions move the returned installation token into a
 Secure, HttpOnly cookie rather than exposing it to browser JavaScript.
 
 The checked-in Vercel configuration targets `https://findout-backend.vercel.app`.
@@ -178,11 +179,20 @@ tooling and send each key privately.
 - Text queries with cursor-following horizontal scrolling, optional forced web
   search, and selectable, scrollable answers with copying.
 - Follow-up questions send the last four successful question/answer pairs, oldest
-  first, capped at 2,000 characters per question or answer. History stays in
-  memory; the server remains stateless. Search Web retries the original request
+  first, capped at 2,000 characters per question or answer. Full threads are stored locally; the server remains stateless. Search Web retries the original request
   with its context and image, replacing that turn's answer in history. Earlier
   images are not included in subsequent follow-up questions.
-- Click the bottom-left feedback address to copy it; confirmation lasts two seconds.
+- **Recent** opens the five latest conversations and lets you continue a thread.
+  **New** starts without earlier context. Each answer shows 🌐 when it used web
+  search and 📷 when it used an attached image. Search retries replace that answer.
+  History stores text and flags, never image bytes; **Clear history** removes it.
+  Threads stop at 100 answers with a prompt to start a new one rather than silently
+  deleting earlier answers. Desktop history is separated by backend origin and
+  survives restarts; Unix history files are created with owner-only permissions.
+- **Feedback** opens a message form, including before activation. Reply email and
+  license/installation IDs are optional. The backend emails verified IDs, not the
+  bearer token; no LLM, chat history, screenshots or license quota are involved.
+  Failed sends keep the draft. Desktop offers **Copy draft**; web offers **Save text**.
 - Clipboard image paste. PNG/JPEG inputs are checked before decode, rejected
   above 3 MB or the source safety envelope, downscaled to a 4096-pixel maximum edge,
   padded to a 1920×1080 canvas when small, and sent as PNG.
@@ -192,7 +202,8 @@ tooling and send each key privately.
 Escape, the global hotkey, clicking away, or losing focus hides the popup. A
 hidden popup keeps its current view for 10 seconds so an accidental dismissal
 can be recovered; after that the question, answer, status, pending image,
-and conversation history are cleared. Ctrl-C stops the development process.
+and active conversation are reset. Recent conversations remain saved until
+you clear them. Ctrl-C stops the development process.
 
 ## macOS downloads
 
@@ -201,8 +212,8 @@ Choose `findout-client-macos-aarch64.dmg` for Apple Silicon or
 then click **Install** to install for your account. After installation, eject
 the disk image. The menu-bar icon or Option+Space opens the popup.
 
-The similarly named files without `.dmg` are internal updater executables,
-not the app download. ZIP downloads on older releases also contain `FindOut.app`.
+Assets labelled **Automatic updater** are used by the app’s update function.
+ZIP downloads on older releases also contain `FindOut.app`.
 
 These builds have ad-hoc executable signatures, but are not Developer ID signed
 or notarized. macOS may block the first launch; use the system's Privacy &

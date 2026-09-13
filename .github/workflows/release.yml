@@ -125,12 +125,16 @@ jobs:
           assets=()
           for asset in dist/*; do
             case "$(basename "$asset")" in
-              findout-client-macos-aarch64.dmg) label="Mac app - Apple Silicon (DMG installer)" ;;
-              findout-client-macos-x86_64.dmg) label="Mac app - Intel (DMG installer)" ;;
-              findout-client-macos-aarch64) label="Automatic updater only - Apple Silicon - not the app download" ;;
-              findout-client-macos-x86_64) label="Automatic updater only - Intel - not the app download" ;;
+              findout-client-macos-aarch64.dmg) label="Mac app · Apple Silicon" ;;
+              findout-client-macos-x86_64.dmg) label="Mac app · Intel" ;;
+              findout-client-macos-aarch64) label="Automatic updater · macOS Apple Silicon" ;;
+              findout-client-macos-x86_64) label="Automatic updater · macOS Intel" ;;
+              findout-client-linux-x86_64.tar.gz) label="Linux app · x86_64" ;;
+              findout-client-windows-x86_64.zip) label="Windows app · x86_64" ;;
+              findout-client-linux-x86_64) label="Automatic updater · Linux x86_64" ;;
+              findout-client-windows-x86_64.exe) label="Automatic updater · Windows x86_64" ;;
               *) label="" ;;
             esac
             assets+=("${asset}${label:+#${label}}")
           done
-          gh release create "${GITHUB_REF_NAME}" "${assets[@]}" --verify-tag --generate-notes
+          gh release create "${GITHUB_REF_NAME}" "${assets[@]}" --title "${GITHUB_REF_NAME}" --verify-tag --generate-notes

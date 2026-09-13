@@ -3,7 +3,7 @@ import {
   DEVICE_KEY,
   HISTORY_KEY,
   INSTALL_HINT_KEY,
-  appendHistory,
+  THREADS_KEY, MAX_THREAD_TURNS, normalizeThreads, updateThread, answerIndicators, threadText,
   makeQueryPayload,
   normalizeHistory,
   randomDeviceId,
@@ -24,22 +24,43 @@ const elements = {
   installHint: $("#installHint"), dismissInstallHint: $("#dismissInstallHint"),
 };
 
-let history = loadHistory();
+let threads = loadThreads();
+let activeThreadId = threads.at(-1)?.id || crypto.randomUUID();
+let history = threads.at(-1)?.turns || [];
 let attachedImage = null;
 let attachedPreviewUrl = null;
 let lastRequest = null;
 let lastAnswer = null;
 let deferredInstallPrompt = null;
 
-function loadHistory() {
-  try { return normalizeHistory(JSON.parse(localStorage.getItem(HISTORY_KEY) || "[]")); }
-  catch { return []; }
+function loadThreads() {
+  try {
+    const saved = localStorage.getItem(THREADS_KEY);
+    if (saved !== null) return normalizeThreads(JSON.parse(saved));
+    const legacy = normalizeHistory(JSON.parse(localStorage.getItem(HISTORY_KEY) || "[]"));
+    return legacy.length ? [{ id: crypto.randomUUID(), turns: legacy }] : [];
+  } catch { return []; }
 }
 
 function saveHistory() {
-  localStorage.setItem(HISTORY_KEY, JSON.stringify(history));
+  threads = updateThread(threads, activeThreadId, history);
+  try {
+    localStorage.setItem(THREADS_KEY, JSON.stringify(threads));
+    localStorage.removeItem(HISTORY_KEY);
+  } catch { elements.queryStatus.textContent = "History is available for this session but could not be saved on this device."; }
   renderHistory();
 }
+
+function newConversation() {
+  activeThreadId = crypto.randomUUID();
+  history = [];
+  lastRequest = null;
+  restoreLatestAnswer();
+  elements.queryInput.value = "";
+  clearImage();
+  elements.queryInput.focus();
+}
+$("#newConversationButton").addEventListener("click", newConversation);
 
 function setActivated(value) {
   localStorage.setItem(ACTIVATED_KEY, value ? "true" : "false");
@@ -66,7 +87,7 @@ function restoreLatestAnswer() {
   }
   lastAnswer = latest.answer;
   elements.answerView.classList.remove("is-waiting");
-  elements.answerSource.textContent = latest.searched ? "FROM THE WEB" : "FROM KNOWLEDGE";
+  elements.answerSource.textContent = `${answerIndicators(latest)} ${latest.searched ? "FROM THE WEB" : "FROM KNOWLEDGE"}`.trim();
   elements.answerText.textContent = latest.answer;
   elements.copyButton.hidden = false;
   elements.answerActions.hidden = true;
@@ -91,6 +112,11 @@ function setBusy(busy, activation = false) {
   if (!activation) {
     elements.queryInput.disabled = busy;
     elements.attachButton.disabled = busy;
+    elements.searchWebButton.disabled = busy;
+    $("#newConversationButton").disabled = busy;
+    elements.clearHistoryButton.disabled = busy;
+    elements.signOutButton.disabled = busy;
+    elements.historyList.inert = busy;
   }
 }
 
@@ -136,17 +162,18 @@ async function ask({ query, forceSearch, image, retry = false }) {
   elements.queryStatus.textContent = "";
   setBusy(true);
   try {
+    if (!retry && history.length >= MAX_THREAD_TURNS) throw new Error("This thread has 100 answers. Start a new conversation to continue; this thread stays in Recent.");
     const payload = retry
       ? { ...lastRequest, force_search: true }
       : makeQueryPayload({ query, history, forceSearch, image, systemContext: mobileContext() });
     const { body, headers } = await api("/api/query", { method: "POST", body: JSON.stringify(payload) });
     if (typeof body.answer !== "string" || typeof body.searched !== "boolean") throw new Error("FindOut returned an invalid answer");
     if (retry && history.length) history = history.slice(0, -1);
-    history = appendHistory(history, { query: payload.query, answer: body.answer, searched: body.searched, timestamp: Date.now() });
+    history = [...history, { query: payload.query, answer: body.answer, searched: body.searched, hadImage: Boolean(payload.image), timestamp: Date.now() }];
     saveHistory();
     lastRequest = payload;
     lastAnswer = body.answer;
-    showAnswer(body.answer, body.searched, headers);
+    showAnswer(body.answer, body.searched, headers, Boolean(payload.image));
     elements.queryInput.value = "";
     elements.forceSearchInput.checked = false;
     resizeComposer();
@@ -156,10 +183,10 @@ async function ask({ query, forceSearch, image, retry = false }) {
   } finally { setBusy(false); }
 }
 
-function showAnswer(answer, searched, headers = null) {
+function showAnswer(answer, searched, headers = null, hadImage = false) {
   elements.answerView.classList.remove("is-waiting");
   elements.answerText.textContent = answer;
-  elements.answerSource.textContent = searched ? "FROM THE WEB" : "FROM KNOWLEDGE";
+  elements.answerSource.textContent = `${answerIndicators({ searched, hadImage })} ${searched ? "FROM THE WEB" : "FROM KNOWLEDGE"}`.trim();
   elements.copyButton.hidden = false;
   elements.answerActions.hidden = false;
   elements.searchWebButton.hidden = searched;
@@ -171,14 +198,29 @@ function showAnswer(answer, searched, headers = null) {
 
 function renderHistory() {
   elements.historyList.replaceChildren();
-  elements.historySection.hidden = history.length === 0;
-  [...history].reverse().forEach((turn, index) => {
+  elements.historySection.hidden = threads.length === 0;
+  [...threads].reverse().forEach((thread, index) => {
+    const turn = thread.turns[0];
     const item = elements.historyTemplate.content.firstElementChild.cloneNode(true);
     const button = item.querySelector(".history-question");
     const answer = item.querySelector(".history-answer");
     item.querySelector(".history-index").textContent = String(index + 1).padStart(2, "0");
-    item.querySelector(".history-title").textContent = turn.query;
-    answer.textContent = turn.answer;
+    item.querySelector(".history-title").textContent = `${turn.query} · ${thread.turns.length} ${thread.turns.length === 1 ? "answer" : "answers"}`;
+    answer.textContent = threadText(thread.turns);
+    const resume = document.createElement("button");
+    resume.type = "button";
+    resume.className = "text-button";
+    resume.textContent = "CONTINUE THREAD";
+    resume.addEventListener("click", () => {
+      activeThreadId = thread.id;
+      history = [...thread.turns];
+      lastRequest = null;
+      clearImage();
+      restoreLatestAnswer();
+      elements.queryInput.value = "";
+      elements.queryInput.focus();
+    });
+    answer.append(document.createElement("br"), resume);
     button.addEventListener("click", () => {
       const open = button.getAttribute("aria-expanded") === "true";
       button.setAttribute("aria-expanded", String(!open));
@@ -308,6 +350,8 @@ document.addEventListener("click", (event) => {
 
 elements.clearHistoryButton.addEventListener("click", () => {
   history = [];
+  threads = [];
+  activeThreadId = crypto.randomUUID();
   saveHistory();
   lastRequest = null;
   restoreLatestAnswer();
@@ -355,3 +399,29 @@ if ("serviceWorker" in navigator) window.addEventListener("load", () => navigato
 setActivated(localStorage.getItem(ACTIVATED_KEY) === "true");
 updateNetworkStatus();
 renderHistory();
+
+const feedbackDialog = $("#feedbackDialog");
+$("#feedbackButton").addEventListener("click", () => feedbackDialog.showModal());
+$("#feedbackClose").addEventListener("click", () => feedbackDialog.close());
+$("#feedbackSave").addEventListener("click", () => {
+  const blob = new Blob([$("#feedbackMessage").value, "\n\nReply email: ", $("#feedbackEmail").value], { type: "text/plain;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a"); link.href = url; link.download = "findout-feedback.txt"; link.click();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+});
+$("#feedbackForm").addEventListener("submit", async event => {
+  event.preventDefault();
+  if ($("#feedbackSend").disabled) return;
+  $("#feedbackSend").disabled = true;
+  for (const id of ["#feedbackMessage", "#feedbackEmail", "#feedbackLicense"]) $(id).disabled = true;
+  $("#feedbackStatus").textContent = "Sending…";
+  try {
+    await api("/api/feedback", { method: "POST", signal: AbortSignal.timeout(15000), body: JSON.stringify({
+      message: $("#feedbackMessage").value, email: $("#feedbackEmail").value.trim(),
+      include_license: $("#feedbackLicense").checked, client: "web/0.1.5",
+    }) });
+    $("#feedbackMessage").value = "";
+    $("#feedbackStatus").textContent = "Feedback sent. Thank you.";
+  } catch (error) { $("#feedbackStatus").textContent = `${error.message}. Your text is kept here; you can also save it.`; }
+  finally { $("#feedbackSend").disabled = false; for (const id of ["#feedbackMessage", "#feedbackEmail", "#feedbackLicense"]) $(id).disabled = false; }
+});

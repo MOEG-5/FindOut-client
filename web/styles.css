@@ -87,7 +87,8 @@ input:focus, textarea:focus { border-color: var(--orange); box-shadow: 0 0 0 3px
 .composer-options { display: flex; align-items: center; gap: 6px; }
 .attach-button, .search-toggle { display: inline-flex; align-items: center; gap: 5px; min-height: 38px; padding: 0 10px; border: 0; border-radius: 10px; background: transparent; color: var(--muted); font-size: 10px; font-weight: 750; letter-spacing: .08em; }
 .attach-button > span:first-child { font-size: 19px; font-weight: 400; }
-.search-toggle input { position: absolute; opacity: 0; pointer-events: none; }
+.search-toggle input { position: absolute; opacity: 0; pointer-events: none; width: 1px; height: 1px; margin: 0; }
+.search-toggle input:focus-visible + span { outline: 2px solid var(--orange); outline-offset: 3px; }
 .search-toggle > span { position: relative; width: 28px; height: 17px; border: 1px solid var(--line); border-radius: 999px; }
 .search-toggle > span::after { content: ""; position: absolute; top: 3px; left: 3px; width: 9px; height: 9px; border-radius: 50%; background: var(--muted); transition: transform .18s ease, background .18s ease; }
 .search-toggle input:checked + span::after { transform: translateX(11px); background: var(--orange); }
@@ -111,3 +112,15 @@ input:focus, textarea:focus { border-color: var(--orange); box-shadow: 0 0 0 3px
   .activation-form .primary-button { grid-column: 2; grid-row: 1; }
   .main-view { min-height: calc(100svh - 116px); }
 }
+
+#feedbackDialog { width: min(92vw, 520px); max-height: 90dvh; overflow: auto; padding: 24px; border: 1px solid #995633; border-radius: 16px; color: #f0c6a5; background: #21130f; }
+#feedbackDialog::backdrop { background: #000a; }
+#feedbackForm { display: grid; gap: 12px; }
+#feedbackForm p { font-size: 13px; line-height: 1.5; }
+#feedbackForm textarea, #feedbackEmail { width: 100%; box-sizing: border-box; padding: 10px; font: inherit; color: inherit; background: #100906; border: 1px solid #995633; border-radius: 6px; }
+.feedback-license { display: flex; align-items: start; gap: 8px; font-size: 14px; }
+.feedback-actions { display: flex; justify-content: flex-end; gap: 12px; }
+.feedback-actions button { min-height: 40px; padding: 8px 16px; }
+.history-answer { white-space: pre-wrap; }
+
+.feedback-license input { flex: 0 0 auto; width: 16px; height: 16px; margin: 2px 0 0; }

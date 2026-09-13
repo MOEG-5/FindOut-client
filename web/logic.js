@@ -50,3 +50,24 @@ export function randomDeviceId(cryptoObject = globalThis.crypto) {
   cryptoObject.getRandomValues(bytes);
   return Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
 }
+
+export const THREADS_KEY = "findout.threads.v2";
+export const MAX_THREAD_TURNS = 100;
+export function normalizeThreads(value) {
+  if (!Array.isArray(value)) return [];
+  return value.filter(t => t && typeof t.id === "string" && Array.isArray(t.turns))
+    .map(t => ({ id: t.id.slice(0, 100), turns: t.turns.filter(turn => turn && typeof turn.query === "string" && typeof turn.answer === "string").slice(0, MAX_THREAD_TURNS).map(turn => ({
+      query: clipText(turn.query, 4000), answer: clipText(turn.answer, 128 * 1024),
+      searched: turn.searched === true, hadImage: turn.hadImage === true,
+      timestamp: Number.isFinite(turn.timestamp) ? turn.timestamp : 0,
+    })) })).filter(t => t.turns.length).slice(-MAX_HISTORY);
+}
+export function updateThread(threads, id, turns) {
+  return normalizeThreads([...threads.filter(t => t.id !== id), { id, turns }]);
+}
+export function answerIndicators(turn) {
+  return [turn.searched ? "🌐" : "", turn.hadImage ? "📷" : ""].filter(Boolean).join(" ");
+}
+export function threadText(turns) {
+  return turns.map(turn => `${turn.query}\n${answerIndicators(turn)}${answerIndicators(turn) ? " " : ""}${turn.answer}`).join("\n\n");
+}

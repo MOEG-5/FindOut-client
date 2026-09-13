@@ -63,3 +63,26 @@ test("query requires an activation cookie", async () => {
   await query({ method: "POST", cookies: {}, body: {} }, response);
   assert.equal(response.statusCode, 401);
 });
+
+test("feedback works without activation and forwards cookie only with consent", async () => withUpstream(async (seen) => {
+  const { default: feedback } = await import("../api/feedback.js");
+  for (const consent of [false, true]) {
+    const response = mockResponse();
+    await feedback({ method: "POST", headers: { "content-type": "application/json" }, cookies: { findout_session: "secret-token" }, body: { message: "Help", include_license: consent } }, response);
+    assert.equal(response.statusCode, 200);
+    assert.equal(seen.at(-1).url, "/v1/feedback");
+    assert.equal(seen.at(-1).headers.authorization, consent ? "Bearer secret-token" : undefined);
+    assert.equal(response.headers["set-cookie"], undefined);
+  }
+  const response = mockResponse();
+  await feedback({ method: "POST", headers: { "content-type": "application/json" }, cookies: {}, body: { message: "Cannot activate", include_license: true } }, response);
+  assert.equal(response.statusCode, 200);
+  assert.equal(seen.at(-1).headers.authorization, undefined);
+}));
+
+test("feedback rejects cross-site simple form submissions", async () => {
+  const { default: feedback } = await import("../api/feedback.js");
+  const response = mockResponse();
+  await feedback({ method: "POST", headers: { "content-type": "text/plain" }, body: { message: "Help" } }, response);
+  assert.equal(response.statusCode, 415);
+});

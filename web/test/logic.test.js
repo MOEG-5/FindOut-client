@@ -29,3 +29,17 @@ test("trial device identifier is 64 lowercase hex characters", () => {
   const cryptoObject = { getRandomValues(bytes) { bytes.fill(171); return bytes; } };
   assert.match(randomDeviceId(cryptoObject), /^[a-f0-9]{64}$/);
 });
+
+test("recent threads retain full answers and per-answer sources while request context stays bounded", async () => {
+  const { updateThread, normalizeThreads, threadText } = await import("../logic.js");
+  const turns = Array.from({ length: 8 }, (_, i) => ({ query: `q${i}`, answer: "ä".repeat(3000), searched: i === 1, hadImage: i === 2 }));
+  let threads = updateThread([], "one", turns);
+  assert.equal(threads[0].turns.length, 8);
+  assert.equal(threads[0].turns[0].answer.length, 3000);
+  assert.match(threadText(threads[0].turns), /🌐/); assert.match(threadText(threads[0].turns), /📷/);
+  assert.equal(previousTurns(threads[0].turns).length, 4);
+  assert.equal(previousTurns(threads[0].turns)[0].answer.length, 2000);
+  for (let i = 2; i <= 6; i++) threads = updateThread(threads, String(i), [{ query: `q${i}`, answer: "a" }]);
+  assert.equal(threads.length, 5); assert.equal(threads[0].id, "2");
+  assert.deepEqual(normalizeThreads([null, {}, { id: "bad", turns: [null] }]), []);
+});

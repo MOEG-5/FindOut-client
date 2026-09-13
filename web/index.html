@@ -23,6 +23,7 @@
         <div><div class="brand">FINDOUT</div><div class="brand-rule"></div></div>
         <div class="topbar-actions">
           <span id="networkStatus" class="status-pill"><span class="status-dot"></span><span>ONLINE</span></span>
+          <button id="feedbackButton" class="text-button" type="button">FEEDBACK</button>
           <button id="settingsButton" class="icon-button" type="button" aria-label="Open settings" aria-expanded="false">•••</button>
         </div>
       </header>
@@ -53,6 +54,7 @@
           <div id="answerActions" class="answer-actions" hidden><button id="searchWebButton" class="secondary-button" type="button">SEARCH WEB</button><span id="allowance" class="allowance"></span></div>
         </section>
 
+        <button id="newConversationButton" class="text-button" type="button">NEW CONVERSATION</button>
         <form id="queryForm" class="composer">
           <div id="imagePreview" class="image-preview" hidden>
             <img id="imageThumb" alt="Attached image preview" />
@@ -81,6 +83,20 @@
       <div id="installHint" class="install-hint" hidden><span>On iPhone: Share → Add to Home Screen</span><button id="dismissInstallHint" type="button" aria-label="Dismiss">×</button></div>
     </main>
 
+    <dialog id="feedbackDialog" aria-labelledby="feedbackTitle">
+      <form id="feedbackForm">
+        <h2 id="feedbackTitle">Feedback</h2>
+        <p>To: moeg-5@agentmail.to</p>
+        <label for="feedbackMessage">Your feedback</label>
+        <textarea id="feedbackMessage" maxlength="4000" rows="7" required></textarea>
+        <label for="feedbackEmail">Email address (optional, if you’d like a reply)</label>
+        <input id="feedbackEmail" type="email" maxlength="254" autocomplete="email" />
+        <label class="feedback-license"><input id="feedbackLicense" type="checkbox" /> Include license and installation IDs for support</label>
+        <p>Sends your feedback, optional reply email and app version (0.1.5). Optional support IDs help us find your license. Your chats and images stay private.</p>
+        <p id="feedbackStatus" role="status"></p>
+        <div class="feedback-actions"><button id="feedbackClose" type="button">Close</button><button id="feedbackSave" type="button">Save text</button><button id="feedbackSend" type="submit">Send</button></div>
+      </form>
+    </dialog>
     <template id="historyItemTemplate">
       <article class="history-item">
         <button class="history-question" type="button" aria-expanded="false">
