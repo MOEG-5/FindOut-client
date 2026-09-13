@@ -1,0 +1,94 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="theme-color" content="#100906" />
+    <meta name="color-scheme" content="dark" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="FindOut" />
+    <meta name="description" content="Ask a quick question without losing your train of thought." />
+    <link rel="manifest" href="/manifest.webmanifest" />
+    <link rel="icon" href="/icons/findout.svg" type="image/svg+xml" />
+    <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png" />
+    <link rel="stylesheet" href="/styles.css" />
+    <title>FindOut</title>
+  </head>
+  <body>
+    <div class="ambient ambient-one" aria-hidden="true"></div>
+    <div class="ambient ambient-two" aria-hidden="true"></div>
+    <main class="app-shell">
+      <header class="topbar">
+        <div><div class="brand">FINDOUT</div><div class="brand-rule"></div></div>
+        <div class="topbar-actions">
+          <span id="networkStatus" class="status-pill"><span class="status-dot"></span><span>ONLINE</span></span>
+          <button id="settingsButton" class="icon-button" type="button" aria-label="Open settings" aria-expanded="false">•••</button>
+        </div>
+      </header>
+
+      <aside id="settingsPanel" class="settings-panel" hidden>
+        <button id="installButton" class="settings-row" type="button" hidden><span>Install FindOut</span><span aria-hidden="true">↗</span></button>
+        <button id="clearHistoryButton" class="settings-row" type="button"><span>Clear recent history</span><span aria-hidden="true">×</span></button>
+        <button id="signOutButton" class="settings-row" type="button"><span>Forget activation</span><span aria-hidden="true">↺</span></button>
+      </aside>
+
+      <section id="activationView" class="activation-view">
+        <div class="activation-mark" aria-hidden="true">?</div>
+        <p class="eyebrow">ONE SMALL FORMALITY</p>
+        <h1>Unlock the useful part.</h1>
+        <p class="lede">Enter <strong>trial</strong> for 20 free requests a day, or use an activation key.</p>
+        <form id="activationForm" class="activation-form">
+          <label class="sr-only" for="activationInput">Activation key</label>
+          <input id="activationInput" name="activation_key" type="password" autocomplete="off" maxlength="256" placeholder="trial or activation key" required />
+          <p id="activationStatus" class="form-status" role="status"></p>
+          <button id="activationButton" class="primary-button" type="submit">ACTIVATE</button>
+        </form>
+      </section>
+
+      <section id="mainView" class="main-view" hidden>
+        <section id="answerView" class="answer-view is-waiting" aria-live="polite">
+          <div class="answer-meta"><span id="answerSource">READY</span><button id="copyButton" class="text-button" type="button" hidden>COPY</button></div>
+          <div id="answerText" class="answer-text">Your answer will appear here.</div>
+          <div id="answerActions" class="answer-actions" hidden><button id="searchWebButton" class="secondary-button" type="button">SEARCH WEB</button><span id="allowance" class="allowance"></span></div>
+        </section>
+
+        <form id="queryForm" class="composer">
+          <div id="imagePreview" class="image-preview" hidden>
+            <img id="imageThumb" alt="Attached image preview" />
+            <div><strong>IMAGE ATTACHED</strong><span id="imageName"></span></div>
+            <button id="removeImageButton" class="icon-button small" type="button" aria-label="Remove attached image">×</button>
+          </div>
+          <label class="sr-only" for="queryInput">Question</label>
+          <textarea id="queryInput" rows="1" maxlength="4000" placeholder="What do you want to know?" required></textarea>
+          <div class="composer-bar">
+            <div class="composer-options">
+              <button id="attachButton" class="attach-button" type="button" aria-label="Attach an image"><span aria-hidden="true">＋</span><span>IMAGE</span></button>
+              <input id="imageInput" type="file" accept="image/png,image/jpeg" hidden />
+              <label class="search-toggle"><input id="forceSearchInput" type="checkbox" /><span></span>WEB</label>
+            </div>
+            <button id="sendButton" class="send-button" type="submit" aria-label="Ask FindOut"><span>ASK</span><b aria-hidden="true">→</b></button>
+          </div>
+          <p id="queryStatus" class="form-status" role="status"></p>
+        </form>
+
+        <section id="historySection" class="history-section" hidden>
+          <div class="section-heading"><h2>RECENT</h2><span>LAST FIVE</span></div>
+          <div id="historyList" class="history-list"></div>
+        </section>
+      </section>
+
+      <div id="installHint" class="install-hint" hidden><span>On iPhone: Share → Add to Home Screen</span><button id="dismissInstallHint" type="button" aria-label="Dismiss">×</button></div>
+    </main>
+
+    <template id="historyItemTemplate">
+      <article class="history-item">
+        <button class="history-question" type="button" aria-expanded="false">
+          <span class="history-index"></span><span class="history-title"></span><span class="history-chevron" aria-hidden="true">⌄</span>
+        </button>
+        <div class="history-answer" hidden></div>
+      </article>
+    </template>
+    <script type="module" src="/app.js"></script>
+  </body>
+</html>
