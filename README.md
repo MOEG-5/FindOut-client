@@ -29,6 +29,11 @@ No API keys or separate accounts are needed.
 
 FindOut lives in your system tray and can be opened whenever you need it.
 
+An installable mobile web client also lives in [`web/`](web/). It keeps the five
+most recent interactions on the device and sends the newest four as follow-up
+context, matching the desktop conversation contract. Use the hosted PWA at
+[findout-pwa.vercel.app](https://findout-pwa.vercel.app).
+
 <img src="docs/findout-screenshot.png" alt="FindOut in its retro theme, displaying an example answer and a follow-up question." width="560">
 
 ## For developers
@@ -39,6 +44,27 @@ Licensed under [GPL-3.0-only](LICENSE).
 
 The current desktop client is a small native Slint application for Linux, Windows, and macOS. Provider keys and model/search logic stay on the FindOut server; the
 client stores only a revocable installation token in the OS keychain.
+
+### Mobile PWA
+
+The PWA is a dependency-free static client with three small Vercel Functions.
+Those functions proxy the existing `/v1/activate` and `/v1/query` contract so the
+backend needs no CORS changes, and move the returned installation token into a
+Secure, HttpOnly cookie rather than exposing it to browser JavaScript.
+
+The checked-in Vercel configuration targets `https://findout-backend.vercel.app`.
+Override `FINDOUT_API_ORIGIN` in the PWA's Vercel project when deploying against a
+different backend. For local development:
+
+```sh
+cd web
+FINDOUT_API_ORIGIN=http://127.0.0.1:8787 npm run dev
+```
+
+Then open `http://127.0.0.1:4173`. Run its tests with `npm test`. Configure the
+Vercel project's Root Directory as `web`; there is no build command or output
+directory. The PWA does not access Supabase directly, so Supabase credentials and
+service-role capabilities remain confined to the existing backend.
 
 Install a current stable Rust toolchain first. Linux additionally needs GTK 3,
 a Secret Service-compatible keychain, and an X11-capable environment; on Arch:

@@ -1,0 +1,11 @@
+{
+  "name": "findout-pwa",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "node dev-server.js",
+    "test": "node --test"
+  },
+  "engines": { "node": ">=20" }
+}

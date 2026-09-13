@@ -1,0 +1,18 @@
+{
+  "id": "/",
+  "name": "FindOut",
+  "short_name": "FindOut",
+  "description": "Ask a quick question without losing your train of thought.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#100906",
+  "theme_color": "#100906",
+  "orientation": "portrait-primary",
+  "categories": ["productivity", "utilities"],
+  "icons": [
+    { "src": "/icons/findout-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "/icons/findout-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "/icons/findout-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ]
+}
