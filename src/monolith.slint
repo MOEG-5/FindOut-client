@@ -1,0 +1,378 @@
+import { ScrollView, Palette } from "std-widgets.slint";
+import "../assets/fonts/Inter.ttf";
+import "../assets/fonts/Anton.ttf";
+import "../assets/fonts/JetBrainsMono.ttf";
+
+export struct RecentSession { title: string, age: string, transcript: string }
+
+// Shared by the answer, history, controls and input strip so both variants
+// retain the same contrast hierarchy without changing their layout.
+global MonolithTheme {
+    in-out property <bool> light: true;
+    out property <color> surface: light ? #ffffff : #1a1a1a;
+    out property <color> ink: light ? #1a1a1a : #ffffff;
+    out property <color> secondary: light ? #1a1a1ac0 : #ffffffb0;
+    out property <color> action: light ? #1a1a1ab8 : #ffffffa8;
+    out property <color> disabled: light ? #1a1a1a45 : #ffffff45;
+    out property <color> muted: light ? #1a1a1aaa : #ffffff88;
+    out property <color> metadata: light ? #1a1a1ab0 : #ffffff99;
+    out property <color> status: light ? #1a1a1aa0 : #ffffff80;
+    out property <color> index: light ? #575757 : #a8a8a8;
+    out property <color> rule: light ? #1a1a1a22 : #ffffff22;
+    out property <color> hover: light ? #1a1a1a12 : #ffffff12;
+    out property <color> row-hover: light ? #1a1a1a09 : #ffffff09;
+    out property <color> placeholder: light ? #aaaaaa : #757575;
+}
+
+component Action inherits Rectangle {
+    in property <string> text;
+    in property <string> hint: text;
+    in property <bool> enabled: true;
+    callback clicked();
+    height: 28px;
+    accessible-role: button;
+    accessible-label: hint;
+    accessible-enabled: enabled;
+    accessible-action-default => { if root.enabled { root.clicked(); } }
+    forward-focus: focus;
+    Tooltip { text: @markdown("\{root.hint}"); }
+    background: focus.has-focus || touch.has-hover ? MonolithTheme.hover : transparent;
+    Text {
+        text: root.text; color: root.enabled ? MonolithTheme.action : MonolithTheme.disabled;
+        font-family: "JetBrains Mono"; font-size: 9px;
+        horizontal-alignment: center; vertical-alignment: center;
+    }
+    focus := FocusScope {
+        key-pressed(event) => {
+            if root.enabled && (event.text == Key.Return || event.text == " ") { root.clicked(); accept } else { reject }
+        }
+    }
+    touch := TouchArea {
+        enabled: root.enabled; mouse-cursor: pointer;
+        clicked => { focus.focus(); root.clicked(); }
+    }
+}
+
+// A short continuous stroke follows an invisible, rounded channel. Sampling the
+// channel keeps both ends on the same route: the tail follows the head around
+// the bend rather than rotating a rigid bar across the wordmark.
+component LiquidDivider inherits Path {
+    in property <bool> active;
+    in property <bool> motion: true;
+    width: 120px; height: 60px;
+    viewbox-width: 120; viewbox-height: 60;
+    stroke: MonolithTheme.ink; stroke-width: 2px;
+    stroke-line-cap: round; stroke-line-join: round;
+    private property <float> travel: root.active ? 79.566371 : 0;
+    animate travel { duration: root.motion ? 760ms : 0ms; easing: cubic-bezier(0.4, 0, 0.2, 1); }
+    pure function point(distance: float) -> { x: float, y: float } {
+        if distance <= 34 { return { x: 26 + distance, y: 43 }; }
+        if distance <= 66 {
+            let t = (distance - 34) / 32;
+            return { x: 60 + 30 * t, y: 43 + 7 * t * t * (3 - 2 * t) };
+        }
+        if distance <= 78.566371 {
+            let angle = (distance - 66) / 12.566371 * 90deg;
+            return { x: 90 + 8 * Math.sin(angle), y: 42 + 8 * Math.cos(angle) };
+        }
+        return { x: 98, y: 42 - (distance - 78.566371) };
+    }
+    MoveTo { x: root.point(root.travel).x; y: root.point(root.travel).y; }
+    LineTo { x: root.point(root.travel + 1).x; y: root.point(root.travel + 1).y; }
+    LineTo { x: root.point(root.travel + 2).x; y: root.point(root.travel + 2).y; }
+    LineTo { x: root.point(root.travel + 3).x; y: root.point(root.travel + 3).y; }
+    LineTo { x: root.point(root.travel + 4).x; y: root.point(root.travel + 4).y; }
+    LineTo { x: root.point(root.travel + 5).x; y: root.point(root.travel + 5).y; }
+    LineTo { x: root.point(root.travel + 6).x; y: root.point(root.travel + 6).y; }
+    LineTo { x: root.point(root.travel + 7).x; y: root.point(root.travel + 7).y; }
+    LineTo { x: root.point(root.travel + 8).x; y: root.point(root.travel + 8).y; }
+    LineTo { x: root.point(root.travel + 9).x; y: root.point(root.travel + 9).y; }
+    LineTo { x: root.point(root.travel + 10).x; y: root.point(root.travel + 10).y; }
+    LineTo { x: root.point(root.travel + 11).x; y: root.point(root.travel + 11).y; }
+    LineTo { x: root.point(root.travel + 12).x; y: root.point(root.travel + 12).y; }
+    LineTo { x: root.point(root.travel + 13).x; y: root.point(root.travel + 13).y; }
+    LineTo { x: root.point(root.travel + 14).x; y: root.point(root.travel + 14).y; }
+    LineTo { x: root.point(root.travel + 15).x; y: root.point(root.travel + 15).y; }
+    LineTo { x: root.point(root.travel + 16).x; y: root.point(root.travel + 16).y; }
+    LineTo { x: root.point(root.travel + 17).x; y: root.point(root.travel + 17).y; }
+    LineTo { x: root.point(root.travel + 18).x; y: root.point(root.travel + 18).y; }
+    LineTo { x: root.point(root.travel + 19).x; y: root.point(root.travel + 19).y; }
+    LineTo { x: root.point(root.travel + 20).x; y: root.point(root.travel + 20).y; }
+    LineTo { x: root.point(root.travel + 21).x; y: root.point(root.travel + 21).y; }
+    LineTo { x: root.point(root.travel + 22).x; y: root.point(root.travel + 22).y; }
+    LineTo { x: root.point(root.travel + 23).x; y: root.point(root.travel + 23).y; }
+    LineTo { x: root.point(root.travel + 24).x; y: root.point(root.travel + 24).y; }
+    LineTo { x: root.point(root.travel + 25).x; y: root.point(root.travel + 25).y; }
+}
+
+// Right presses bubble from the read-only editor to its parent. Left presses,
+// selection drags, keyboard navigation and wheel events stay with the editor.
+component Answer inherits TouchArea {
+    in property <string> text;
+    in property <bool> display-size: false;
+    in property <length> body-size: 17px;
+    callback copy();
+    callback escape();
+    private property <bool> large: root.display-size && headline-measure.preferred-width <= root.width - 12px;
+    headline-measure := Text { visible: false; text: root.text; font-family: "Anton"; font-size: 69px; }
+    pointer-event(event) => {
+        if event.button == PointerEventButton.right && event.kind == PointerEventKind.down && !root.text.is-empty { root.copy(); }
+    }
+    scroll := ScrollView {
+        width: parent.width; height: parent.height;
+        viewport-width: self.visible-width;
+        viewport-height: editor.height;
+        horizontal-scrollbar-policy: always-off;
+        mouse-drag-pan-enabled: false;
+        editor := TextInput {
+            x: 0px; y: 0px;
+            width: scroll.visible-width - 12px;
+            height: max(scroll.visible-height, self.preferred-height);
+            page-height: scroll.visible-height;
+            text: root.text;
+            font-family: root.large ? "Anton" : "Inter";
+            font-size: root.large ? 69px : root.body-size;
+            color: MonolithTheme.ink;
+            read-only: true; single-line: false; wrap: word-wrap;
+            text-cursor-width: 0px;
+            accessible-role: AccessibleRole.text;
+            vertical-alignment: top;
+            selection-background-color: MonolithTheme.ink; selection-foreground-color: MonolithTheme.surface;
+            changed text => { scroll.viewport-y = 0px; }
+            cursor-position-changed(pos) => {
+                scroll.viewport-y = min(0px, max(scroll.visible-height - self.height,
+                    max(-pos.y, min(scroll.viewport-y, scroll.visible-height - pos.y - 22px))));
+            }
+            key-pressed(event) => {
+                if event.text == Key.Escape { root.escape(); accept } else { reject }
+            }
+        }
+    }
+}
+
+export component FindOutWindow inherits Window {
+    in property <bool> local-trial: false;
+    in-out property <bool> light-theme <=> MonolithTheme.light;
+    title: root.local-trial ? "FindOut Monolith" : "FindOut"; always-on-top: true; no-frame: true;
+    width: 550px; height: 310px; background: MonolithTheme.surface;
+    default-font-family: "Inter";
+    in property <bool> activated: false;
+    in property <bool> busy: false;
+    in property <bool> has-image: false;
+    in property <bool> can-force-search: false;
+    in property <string> answer;
+    in property <bool> short-answer: false;
+    in property <string> submitted-question;
+    in property <string> sources;
+    in property <string> status;
+    in property <string> update-available;
+    in property <bool> dev-metrics: false;
+    in property <string> shortcut-label: "SUPER + SPACE";
+    in property <string> paste-label: "CTRL+V";
+    in property <string> roundtrip;
+    in-out property <string> question;
+    in-out property <string> activation-key;
+    in-out property <bool> recent-open: false;
+    in-out property <int> expanded-session: -1;
+    in property <[RecentSession]> sessions;
+    in-out property <bool> motion: true;
+    in property <bool> popup-visible: true;
+    private property <bool> arrow-step: false;
+    private property <bool> question-ready: true;
+    private property <bool> asked: !root.submitted-question.is-empty && !root.recent-open && root.activated;
+    init => { Palette.color-scheme = root.light-theme ? ColorScheme.light : ColorScheme.dark; }
+    changed light-theme => { Palette.color-scheme = root.light-theme ? ColorScheme.light : ColorScheme.dark; }
+    callback setup-tray();
+    callback activate(string);
+    callback submit(string, bool);
+    callback paste-image() -> bool;
+    callback clear-image();
+    callback copy-answer();
+    callback copy-text(string);
+    callback open-feedback();
+    callback open-history();
+    callback resume-session(int);
+    callback clear-history();
+    callback new-conversation();
+    callback open-releases();
+    callback escape();
+    public function focus-input() { if root.activated { input.focus(); } else { activation-input.focus(); } }
+
+    public function animate-question() {
+        root.question-ready = false;
+        question-timer.start();
+    }
+    question-timer := Timer {
+        interval: 16ms;
+        running: false;
+        triggered => { root.question-ready = true; self.stop(); }
+    }
+    Timer {
+        interval: 2200ms;
+        running: root.motion && root.popup-visible && !root.recent-open && !root.busy;
+        triggered => { root.arrow-step = !root.arrow-step; }
+    }
+    FocusScope {
+        width: parent.width; height: parent.height;
+        key-pressed(event) => {
+            if event.text == Key.Escape {
+                if root.recent-open { root.recent-open = false; root.focus-input(); }
+                else { root.escape(); }
+                accept
+            } else { reject }
+        }
+        Text {
+            x: 24px; y: 20px; height: 18px; text: "FINDOUT";
+            color: MonolithTheme.ink; font-size: 14px; font-weight: 700; letter-spacing: 1.3px;
+        }
+        LiquidDivider { x: 0px; y: 0px; active: root.asked; motion: root.motion; }
+        Rectangle {
+            x: 102px; y: 15px; width: parent.width - 182px; height: 29px; clip: true;
+            Text {
+                x: root.asked && root.question-ready ? 0px : -parent.width;
+                width: parent.width; height: parent.height;
+                text: root.submitted-question;
+                color: MonolithTheme.muted; font-size: 10px; font-weight: 300; letter-spacing: 0.8px;
+                vertical-alignment: center; overflow: elide;
+                animate x { duration: root.motion && root.question-ready ? 620ms : 0ms; delay: root.asked && root.motion ? 560ms : 0ms; easing: cubic-bezier(0.16, 1, 0.3, 1); }
+            }
+        }
+        if root.activated: Action {
+            x: parent.width - 76px; y: 7px; width: 64px;
+            text: root.recent-open ? "BACK" : "RECENT";
+            enabled: !root.busy;
+            clicked => {
+                if root.recent-open { root.recent-open = false; root.focus-input(); }
+                else { root.open-history(); }
+            }
+        }
+        if !root.update-available.is-empty: Action {
+            x: parent.width - 156px; y: 37px; width: 144px;
+            text: root.update-available;
+            enabled: !root.busy;
+            clicked => { root.open-releases(); }
+        }
+        if !root.recent-open: Rectangle {
+            x: 24px; y: 73px; width: parent.width - 48px; height: 147px;
+            if root.activated: Answer {
+                text: root.answer; display-size: root.short-answer;
+                copy => { root.copy-answer(); }
+                escape => { root.escape(); }
+            }
+            if !root.activated: Text {
+                x: 0px; y: 0px; width: parent.width; height: parent.height;
+                text: "A little space to find out.\n\nEnter trial for 20 free requests a day, or use an activation key. An app-specific device ID restores your trial; raw machine IDs stay on your device.";
+                color: MonolithTheme.secondary; font-size: 14px; wrap: word-wrap;
+            }
+        }
+        if root.recent-open: ScrollView {
+            x: 24px; y: 72px; width: parent.width - 48px; height: parent.height - 110px;
+            viewport-width: self.visible-width;
+            horizontal-scrollbar-policy: always-off;
+            mouse-drag-pan-enabled: false;
+            VerticalLayout {
+                spacing: 0px; padding: 0px;
+                if root.sessions.length == 0: Text {
+                    text: "Your recent conversations will appear here.";
+                    color: MonolithTheme.muted; font-size: 12px; height: 40px;
+                }
+                for session[index] in root.sessions: Rectangle {
+                    private property <bool> expanded: root.expanded-session == index;
+                    private property <length> answer-height: min(124px, max(26px, measure.preferred-height));
+                    measure := Text { visible: false; width: parent.width - 35px; text: session.transcript; font-size: 13px; wrap: word-wrap; }
+                    height: 33px + reveal.height;
+                    Rectangle { y: parent.height - 1px; height: 1px; background: MonolithTheme.rule; }
+                    Rectangle {
+                        y: 0px; height: 33px;
+                        background: row-touch.has-hover || row-focus.has-focus ? MonolithTheme.row-hover : transparent;
+                        accessible-role: button; accessible-label: session.title;
+                        accessible-action-default => { root.expanded-session = parent.expanded ? -1 : index; }
+                        Text { x: 0px; width: 23px; height: parent.height; text: "0" + (index + 1); color: MonolithTheme.index; font-family: "JetBrains Mono"; font-size: 9px; vertical-alignment: center; }
+                        Text { x: 23px; width: parent.width - 112px; height: parent.height; text: session.title; color: MonolithTheme.ink; font-size: 12px; font-weight: 500; overflow: elide; vertical-alignment: center; }
+                        Text { x: parent.width - 80px; width: 56px; height: parent.height; text: session.age; color: MonolithTheme.metadata; font-family: "JetBrains Mono"; font-size: 9px; horizontal-alignment: right; vertical-alignment: center; }
+                        Text { x: parent.width - 13px; width: 13px; height: parent.height; text: root.expanded-session == index ? "↓" : "↗"; color: MonolithTheme.metadata; font-size: 12px; vertical-alignment: center; }
+                        row-focus := FocusScope {
+                            key-pressed(event) => {
+                                if event.text == Key.Return || event.text == " " { root.expanded-session = root.expanded-session == index ? -1 : index; accept } else { reject }
+                            }
+                        }
+                        row-touch := TouchArea {
+                            mouse-cursor: pointer;
+                            clicked => { row-focus.focus(); root.expanded-session = root.expanded-session == index ? -1 : index; }
+                        }
+                    }
+                    reveal := Rectangle {
+                        y: 33px; height: parent.expanded ? self.answer-height + 48px : 0px;
+                        private property <length> answer-height: parent.answer-height;
+                        clip: true;
+                        animate height { duration: root.motion ? 380ms : 0ms; easing: cubic-bezier(0.22, 1, 0.36, 1); }
+                        Answer {
+                            x: 23px; y: 10px; width: parent.width - 23px; height: parent.answer-height;
+                            text: session.transcript; body-size: 13px;
+                            copy => { root.copy-text(session.transcript); }
+                            escape => { root.recent-open = false; root.focus-input(); }
+                        }
+                        Action { x: 18px; y: parent.answer-height + 16px; width: 136px; text: "CONTINUE THREAD →"; clicked => { root.resume-session(index); root.focus-input(); } }
+                    }
+                }
+            }
+        }
+        // Reserve a separate status line so errors and quota never obscure answers.
+        Text {
+            x: 24px; y: root.recent-open ? parent.height - 32px : 225px;
+            width: parent.width - 128px; height: 15px;
+            text: root.recent-open ? root.status : root.sources + (!root.sources.is-empty && !root.status.is-empty ? "  ·  " : "") + root.status + (root.dev-metrics && !root.roundtrip.is-empty ? "  ·  " + root.roundtrip : "");
+            color: MonolithTheme.status; font-family: "JetBrains Mono"; font-size: 8px;
+            overflow: elide; vertical-alignment: center;
+            Tooltip { text: @markdown("\{root.status}"); }
+        }
+        Action { x: parent.width - 88px; y: root.recent-open ? parent.height - 36px : 218px; width: 72px; text: "Feedback"; clicked => { root.open-feedback(); } }
+        Rectangle {
+            visible: !root.recent-open;
+            y: parent.height - 63px; height: 63px; background: MonolithTheme.ink;
+            Rectangle { x: 24px; y: 45px; width: parent.width - 48px; height: 1px; background: MonolithTheme.surface; }
+            Text {
+                x: root.arrow-step && root.motion ? 29px : 23px; y: 10px; width: 20px; height: 34px;
+                text: root.busy ? "···" : "→"; font-size: 18px; color: MonolithTheme.surface; vertical-alignment: center;
+                animate x { duration: root.motion ? 2200ms : 0ms; easing: ease-in-out; }
+            }
+            TouchArea {
+                x: 16px; y: 6px; width: 34px; height: 40px; enabled: !root.busy; mouse-cursor: pointer;
+                clicked => { if root.activated { root.submit(root.question, false); } else { root.activate(root.activation-key); } }
+            }
+            Rectangle {
+                x: 55px; y: 10px; width: parent.width - (root.has-image ? 142px : 79px); height: 34px; clip: true;
+                if root.activated && root.question.is-empty && root.asked: Text { x: 0px; width: parent.width; height: parent.height; text: "Ask another question"; color: MonolithTheme.placeholder; font-size: 14px; vertical-alignment: center; }
+                if !root.activated && root.activation-key.is-empty: Text { x: 0px; width: parent.width; height: parent.height; text: "Activation key or trial"; color: MonolithTheme.placeholder; font-size: 14px; vertical-alignment: center; }
+                input := TextInput {
+                    visible: root.activated;
+                    private property <length> scroll-x;
+                    x: min(0px, max(parent.width - self.width, self.scroll-x));
+                    width: max(parent.width, self.preferred-width + self.text-cursor-width); height: parent.height;
+                    accessible-label: "Question";
+                    single-line: true; text <=> root.question; font-size: 14px; color: MonolithTheme.surface;
+                    vertical-alignment: center; enabled: !root.busy;
+                    selection-background-color: MonolithTheme.surface; selection-foreground-color: MonolithTheme.ink;
+                    cursor-position-changed(pos) => { self.scroll-x = max(-pos.x + 4px, min(self.scroll-x, parent.width - pos.x - self.text-cursor-width - 4px)); }
+                    accepted => { root.submit(self.text, false); }
+                    key-pressed(event) => {
+                        if (event.modifiers.control || event.modifiers.meta) && (event.text == "v" || event.text == "V") && root.paste-image() { accept } else { reject }
+                    }
+                }
+                activation-input := TextInput {
+                    visible: !root.activated; width: parent.width; height: parent.height;
+                    accessible-label: "Activation key or trial";
+                    text <=> root.activation-key; input-type: password;
+                    font-size: 14px; color: MonolithTheme.surface; vertical-alignment: center; enabled: !root.busy;
+                    selection-background-color: MonolithTheme.surface; selection-foreground-color: MonolithTheme.ink;
+                    accepted => { root.activate(self.text); }
+                }
+            }
+            if root.has-image: Rectangle {
+                x: parent.width - 83px; y: 13px; width: 59px; height: 28px;
+                Text { text: "IMG ×"; font-family: "JetBrains Mono"; font-size: 10px; color: MonolithTheme.surface; vertical-alignment: center; horizontal-alignment: right; }
+                TouchArea { enabled: !root.busy; mouse-cursor: pointer; clicked => { root.clear-image(); } }
+            }
+        }
+    }
+}

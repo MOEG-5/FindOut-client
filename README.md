@@ -34,7 +34,18 @@ threads and per-answer 🌐 web-search / 📷 image indicators. Only the newest 
 turns from the active thread are sent as follow-up context. Use the hosted PWA at
 [findout-pwa.vercel.app](https://findout-pwa.vercel.app).
 
-<img src="docs/findout-screenshot.png" alt="FindOut in its retro theme, displaying an example answer and a follow-up question." width="560">
+<img src="docs/findout-screenshot.png" alt="FindOut Monolith in its default light theme, displaying an example answer." width="550">
+
+## Monolith desktop UI
+
+Starting with **v0.1.6**, production releases use Monolith in **light mode** by
+default. Uncheck **Light theme** in the tray menu for the dark variant; both
+themes keep the same layout and interactions. The selection applies for the
+running session.
+
+The [previous desktop UI](archive/desktop-v0.1.5/) is archived for reference.
+See [Monolith details](docs/monolith.md) for interactions, checks and the optional
+separate local preview launcher.
 
 ## For developers
 
@@ -167,33 +178,38 @@ tooling and send each key privately.
 
 ## Client responsibilities
 
-- Frameless, translucent popup with the platform hotkey: Super+Space on Linux
+- Frameless Monolith popup with the platform hotkey: Super+Space on Linux
   Alt+Space on Windows, and Option+Space on macOS. It opens around the pointer, stays inside the
   monitor work area, and has no taskbar entry. Windows explicitly disables the
   borderless-window shadow; X11 uses a utility window hint, while any remaining
   compositor shadow is controlled by the desktop.
-- A native tray icon keeps the hidden client reachable. Its menu selects the
-  Light, Dark, or Retro palette; Light is the default.
+- A native tray icon keeps the hidden client reachable. Monolith defaults to a
+  white answer area and charcoal input strip. **Light theme** in the tray menu
+  switches between light and dark for the running session.
 - Activation UI with issued-key support, free-trial enrollment, and OS keychain
   storage. Tokens are isolated by configured backend origin.
-- Text queries with cursor-following horizontal scrolling, optional forced web
-  search, and selectable, scrollable answers with copying.
+- Text queries with cursor-following horizontal scrolling and selectable,
+  scrollable answers. Answers have no insertion caret; right-click copies them.
 - Follow-up questions send the last four successful question/answer pairs, oldest
-  first, capped at 2,000 characters per question or answer. Full threads are stored locally; the server remains stateless. Search Web retries the original request
-  with its context and image, replacing that turn's answer in history. Earlier
-  images are not included in subsequent follow-up questions.
-- **Recent** opens the five latest conversations and lets you continue a thread.
-  **New** starts without earlier context. Each answer shows 🌐 when it used web
-  search and 📷 when it used an attached image. Search retries replace that answer.
-  History stores text and flags, never image bytes; **Clear history** removes it.
-  Threads stop at 100 answers with a prompt to start a new one rather than silently
-  deleting earlier answers. Desktop history is separated by backend origin and
-  survives restarts; Unix history files are created with owner-only permissions.
+  first, capped at 2,000 characters per question or answer. Full threads are stored
+  locally; the server remains stateless. Earlier images are not included in
+  subsequent follow-up questions.
+- **Recent** expands the five latest conversations within the popup and lets you
+  continue a thread. Dismissing the popup for ten seconds starts fresh. The answer
+  footer identifies web/image usage; saved threads include the corresponding
+  indicators. History stores text and flags, never image bytes.
+  Threads stop at 100 answers rather than silently deleting earlier answers.
+  Desktop history is separated by backend origin and survives restarts; Unix
+  history files are created with owner-only permissions.
+- **Reduce motion** in the tray menu disables the divider, question, arrow and
+  Recent animations for the running session.
 - **Feedback** opens a message form, including before activation. Reply email and
   license/installation IDs are optional. The backend emails verified IDs, not the
   bearer token; no LLM, chat history, screenshots or license quota are involved.
   Failed sends keep the draft. Desktop offers **Copy draft**; web offers **Save text**.
-- Clipboard image paste. PNG/JPEG inputs are checked before decode, rejected
+- Clipboard image paste, including a single PNG/JPEG file copied from Thunar
+  or another Linux file manager offering file references. Ordinary text paths
+  remain text. PNG/JPEG inputs are checked before decode, rejected
   above 3 MB or the source safety envelope, downscaled to a 4096-pixel maximum edge,
   padded to a 1920×1080 canvas when small, and sent as PNG.
 - A minimal one-line device context so system-specific “how do I…” answers fit

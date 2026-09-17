@@ -1,6 +1,6 @@
 [package]
 name = "findout-client"
-version = "0.1.5"
+version = "0.1.6"
 edition = "2021"
 license = "GPL-3.0-only"
 description = "Minimal native desktop client for FindOut"
@@ -8,6 +8,7 @@ description = "Minimal native desktop client for FindOut"
 [features]
 default = []
 dev-metrics = []
+local-trial = []
 
 [dependencies]
 slint = { version = "1.17", default-features = false, features = [

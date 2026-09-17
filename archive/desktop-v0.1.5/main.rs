@@ -3,11 +3,7 @@
     windows_subsystem = "windows"
 )]
 
-#[cfg(all(test, target_os = "linux"))]
-mod clipboard_tests;
 mod lifecycle;
-#[cfg(test)]
-mod monolith_tests;
 
 use base64::Engine as _;
 use chrono::DateTime;
@@ -50,15 +46,17 @@ const CANVAS_WIDTH: u32 = 1_920;
 const CANVAS_HEIGHT: u32 = 1_080;
 const CANVAS_BG: [u8; 4] = [14, 17, 24, 255];
 const MAX_RESPONSE_BYTES: u64 = 128 * 1024;
-const POPUP_WIDTH: i32 = 550;
-const POPUP_HEIGHT: i32 = 310;
+const POPUP_WIDTH: i32 = 560;
+const POPUP_HEIGHT: i32 = 320;
 const FOCUS_LOSS_DEBOUNCE: Duration = Duration::from_millis(100);
 const HIDE_GRACE: Duration = Duration::from_secs(10);
 const UPDATE_CHECK_TIMEOUT: Duration = Duration::from_secs(5);
+const THEME_LIGHT: i32 = 0;
+const THEME_DARK: i32 = 1;
+const THEME_RETRO: i32 = 2;
 
 slint::slint! {
-    export { FindOutWindow, RecentSession } from "monolith.slint";
-    import { Button, CheckBox, LineEdit, TextEdit } from "std-widgets.slint";
+    import { Palette, ScrollView, Button, CheckBox, LineEdit, TextEdit } from "std-widgets.slint";
 
     export component FeedbackWindow inherits Window {
         title: "FindOut feedback";
@@ -80,7 +78,7 @@ slint::slint! {
             Text { text: "Email address (optional, if you’d like a reply)"; }
             LineEdit { text <=> root.email; enabled: !root.busy; }
             CheckBox { text: "Include license and installation IDs for support"; checked <=> root.include-license; enabled: !root.busy; }
-            Text { text: "Sends your feedback, optional reply email and app version (0.1.6). Optional support IDs help us find your license. Your chats and images stay private."; wrap: word-wrap; font-size: 12px; }
+            Text { text: "Sends your feedback, optional reply email and app version (0.1.5). Optional support IDs help us find your license. Your chats and images stay private."; wrap: word-wrap; font-size: 12px; }
             Text { text: root.status; wrap: word-wrap; font-size: 12px; }
             HorizontalLayout {
                 Button { text: "Close"; clicked => { root.dismiss(); } }
@@ -88,6 +86,407 @@ slint::slint! {
                 Button { text: root.busy ? "Sending…" : "Send"; enabled: !root.busy && !root.message.is-empty; clicked => { root.send(); } }
             }
         }
+    }
+
+    export component HistoryWindow inherits Window {
+        title: "FindOut recent conversations";
+        width: 620px;
+        height: 540px;
+        in property <[string]> titles;
+        in property <string> transcript;
+        in property <int> selected: -1;
+        callback select(int);
+        callback resume();
+        callback clear-history();
+        VerticalLayout {
+            padding: 16px;
+            spacing: 8px;
+            Text { text: "RECENT · LAST FIVE · ON THIS DEVICE"; font-size: 12px; }
+            for title[index] in root.titles: Button {
+                text: title;
+                clicked => { root.select(index); }
+            }
+            TextEdit { text: root.transcript; read-only: true; wrap: word-wrap; vertical-stretch: 1; }
+            HorizontalLayout {
+                Button { text: "Clear history"; clicked => { root.clear-history(); } }
+                Button { text: "Continue thread"; enabled: root.selected >= 0; clicked => { root.resume(); } }
+            }
+        }
+    }
+
+    export component FindOutWindow inherits Window {
+        title: "FindOut";
+        always-on-top: true;
+        no-frame: true;
+        width: 560px;
+        height: 320px;
+        // ponytail: translucent tint, not backdrop blur; add a platform compositor hook if real blur is required.
+        background: transparent;
+
+        in property <bool> activated: false;
+        in property <bool> busy: false;
+
+        in property <bool> has-image: false;
+        in property <bool> can-force-search: false;
+        in property <string> answer: "";
+        in property <string> status: "";
+        in property <string> update_available: "";
+        in property <bool> dev_metrics: false;
+        in property <string> shortcut-label: "SUPER + SPACE";
+        in property <string> paste-label: "CTRL+V";
+        in property <string> roundtrip: "";
+        in-out property <string> question: "";
+        in-out property <string> activation_key: "";
+        in property <int> theme: 0;
+        init => { Palette.color-scheme = root.theme == 0 ? ColorScheme.light : ColorScheme.dark; }
+        changed theme => { Palette.color-scheme = root.theme == 0 ? ColorScheme.light : ColorScheme.dark; }
+
+        private property <color> panel_bg: root.theme == 0 ? #fffaf2ee : root.theme == 1 ? #10151de8 : #160e0be6;
+        private property <color> field_bg: root.theme == 0 ? #fffdf8e6 : root.theme == 1 ? #171d27e6 : #24140dd9;
+        private property <color> answer_bg: root.theme == 0 ? #fffaf0cc : root.theme == 1 ? #131a24cc : #21130db8;
+        private property <color> primary_text: root.theme == 0 ? #8b3f1f : root.theme == 1 ? #e28a4e : #d27839;
+        private property <color> accent: root.theme == 0 ? #a94f24 : root.theme == 1 ? #e07839 : #c6632f;
+        private property <color> bright_accent: root.theme == 0 ? #b95b2a : root.theme == 1 ? #f0a065 : #f0a065;
+        private property <color> muted_text: root.theme == 0 ? #8c5a3f : root.theme == 1 ? #9c735d : #9a5b36;
+        private property <color> faint_text: root.theme == 0 ? #a57d63 : root.theme == 1 ? #735b4a : #70432a;
+        private property <color> border: root.theme == 0 ? #b96b3da6 : root.theme == 1 ? #9b5b3c99 : #753c1fa6;
+        private property <color> field_border: root.theme == 0 ? #b96b3d99 : root.theme == 1 ? #744b3d99 : #6d3b2299;
+        private property <color> selection_bg: root.theme == 0 ? #e29b6aa6 : root.theme == 1 ? #c66a3da6 : #a9552fa6;
+        private property <color> selection_fg: root.theme == 0 ? #3a1b0e : root.theme == 1 ? #24150d : #21120b;
+
+        callback setup-tray();
+        callback activate(string);
+        callback submit(string, bool);
+        callback paste-image();
+        callback clear-image();
+        callback copy-answer();
+        callback open-feedback();
+        callback open-history();
+        callback new-conversation();
+        callback open-releases();
+        callback escape();
+
+        panel := Rectangle {
+            x: 4px;
+            y: 4px;
+            width: parent.width - 8px;
+            height: parent.height - 8px;
+            background: root.panel_bg;
+            border-radius: 16px;
+            border-width: 1px;
+            border-color: root.border;
+            clip: true;
+
+            VerticalLayout {
+                padding: 16px;
+                spacing: 9px;
+
+                HorizontalLayout {
+                    height: 18px;
+                    Text {
+                        text: "FINDOUT";
+                        color: root.accent;
+                        font-size: 13px;
+                        font-weight: 600;
+                        horizontal-stretch: 1;
+                    }
+                    if root.activated: Button {
+                        text: "Recent";
+                        enabled: !root.busy;
+                        clicked => { root.open-history(); }
+                    }
+                    if root.activated: Button {
+                        text: "New";
+                        enabled: !root.busy;
+                        clicked => { root.new-conversation(); }
+                    }
+                    Text {
+                        text: !root.activated ? "ACTIVATE ONCE" :
+                            root.dev_metrics ? "DEV · " + root.shortcut-label : root.shortcut-label;
+                        color: root.muted_text;
+                        font-size: 10px;
+                    }
+                }
+
+                Rectangle {
+                    width: 26px;
+                    height: 2px;
+                    background: root.accent;
+                    border-radius: 1px;
+                }
+
+                if !root.activated: VerticalLayout {
+                    spacing: 9px;
+
+                    Text {
+                        text: "Enter trial for 20 free requests/day, or an activation key. A private app-specific device ID prevents duplicate trials; raw machine IDs stay here.";
+                        color: root.muted_text;
+                        font-size: 12px;
+                        wrap: word-wrap;
+                    }
+
+                    activation_shell := Rectangle {
+                        height: 44px;
+                        background: root.field_bg;
+                        border-radius: 10px;
+                        border-width: 1px;
+                        border-color: activation_input.has-focus ? root.accent : root.field_border;
+                        clip: true;
+
+                        activation_input := TextInput {
+                            x: 13px;
+                            width: parent.width - 26px;
+                            height: parent.height;
+                            text <=> root.activation_key;
+                            color: root.primary_text;
+                            selection-background-color: root.selection_bg;
+                            selection-foreground-color: root.selection_fg;
+                            font-size: 15px;
+                            input-type: password;
+                            vertical-alignment: center;
+                            enabled: !root.busy;
+                            accepted => { root.activate(self.text); }
+                            key-pressed(event) => {
+                                if (event.text == Key.Escape) { root.escape(); accept }
+                                reject
+                            }
+                        }
+                    }
+                }
+
+                if root.activated: VerticalLayout {
+                    spacing: 9px;
+
+                    input_shell := Rectangle {
+                        height: 44px;
+                        background: root.field_bg;
+                        border-radius: 10px;
+                        border-width: 1px;
+                        border-color: input.has-focus ? root.accent : root.field_border;
+                        clip: true;
+
+                        Rectangle {
+                            x: 13px;
+                            width: paste_button.x - self.x - 8px;
+                            height: parent.height;
+                            clip: true;
+
+                            input := TextInput {
+                                private property <length> scroll-x;
+                                x: min(0px, max(parent.width - self.width, self.scroll-x));
+                                width: max(parent.width, self.preferred-width + self.text-cursor-width);
+                                single-line: true;
+                                cursor-position-changed(pos) => {
+                                    self.scroll-x = max(-pos.x + 4px,
+                                        min(self.scroll-x, parent.width - pos.x - self.text-cursor-width - 4px));
+                                }
+                                height: parent.height;
+                                text <=> root.question;
+                                color: root.primary_text;
+                                selection-background-color: root.selection_bg;
+                                selection-foreground-color: root.selection_fg;
+                                font-size: 16px;
+                                vertical-alignment: center;
+                                enabled: !root.busy;
+                                accepted => { root.submit(self.text, false); }
+                                key-pressed(event) => {
+                                    if (event.text == Key.Escape) { root.escape(); accept }
+                                    if ((event.modifiers.control || event.modifiers.meta) &&
+                                        (event.text == "v" || event.text == "V")) {
+                                        root.paste-image();
+                                    }
+                                    reject
+                                }
+                            }
+                        }
+
+                        paste_button := Rectangle {
+                            x: parent.width - 104px;
+                            y: 4px;
+                            width: 42px;
+                            height: parent.height - 8px;
+                            background: paste_area.pressed ? root.accent : root.field_border;
+                            border-radius: 7px;
+                            Text {
+                                text: root.has-image ? "IMG" : "＋";
+                                color: root.accent;
+                                font-size: root.has-image ? 10px : 18px;
+                                horizontal-alignment: center;
+                                vertical-alignment: center;
+                            }
+                            paste_area := TouchArea {
+                                enabled: !root.busy;
+                                clicked => { root.paste-image(); }
+                            }
+                        }
+
+                        send_button := Rectangle {
+                            x: parent.width - 56px;
+                            y: 4px;
+                            width: 42px;
+                            height: parent.height - 8px;
+                            background: send_area.pressed ? root.accent : root.accent;
+                            border-radius: 7px;
+                            Text {
+                                text: root.busy ? "…" : "→";
+                                color: root.bright_accent;
+                                font-size: 18px;
+                                horizontal-alignment: center;
+                                vertical-alignment: center;
+                            }
+                            send_area := TouchArea {
+                                enabled: !root.busy;
+                                clicked => { root.submit(input.text, false); }
+                            }
+                        }
+                    }
+
+                    if root.has-image: Rectangle {
+                        height: 18px;
+                        Text {
+                            text: "IMAGE ATTACHED";
+                            color: root.accent;
+                            font-size: 10px;
+                            horizontal-stretch: 1;
+                        }
+                        TouchArea {
+                            enabled: !root.busy;
+                            clicked => { root.clear-image(); }
+                        }
+                    }
+
+                    answer_shell := Rectangle {
+                        vertical-stretch: 1;
+                        background: root.answer_bg;
+                        border-radius: 10px;
+                        border-width: 1px;
+                        border-color: root.field_border;
+                        clip: true;
+
+                        answer_scroll := ScrollView {
+                            x: 12px;
+                            y: 9px;
+                            width: parent.width - 24px;
+                            height: parent.height - 18px;
+                            viewport-width: self.visible-width;
+                            viewport-height: answer_text.height;
+                            horizontal-scrollbar-policy: always-off;
+                            mouse-drag-pan-enabled: false;
+
+                            answer_text := TextInput {
+                                width: answer_scroll.visible-width - 14px;
+                                height: max(answer_scroll.visible-height, self.preferred-height);
+                                page-height: answer_scroll.visible-height;
+                                changed text => { answer_scroll.viewport-y = 0px; }
+                                cursor-position-changed(pos) => {
+                                    answer_scroll.viewport-y = min(0px,
+                                        max(answer_scroll.visible-height - self.height,
+                                            max(-pos.y, min(answer_scroll.viewport-y,
+                                                answer_scroll.visible-height - pos.y - 20px))));
+                                }
+                                text: root.answer.is-empty ? "Ask a question to begin" : root.answer;
+                                color: root.answer.is-empty ? root.faint_text : root.primary_text;
+                                font-size: 15px;
+                                read-only: true;
+                                single-line: false;
+                                wrap: word-wrap;
+                                vertical-alignment: top;
+                                selection-background-color: root.selection_bg;
+                                selection-foreground-color: root.selection_fg;
+                                key-pressed(event) => {
+                                    if (event.text == Key.Escape) { root.escape(); accept }
+                                    reject
+                                }
+                            }
+                        }
+                    }
+
+                    HorizontalLayout {
+                        height: 18px;
+                        Text {
+                            text: root.paste-label + (root.has-image ? " TO REPLACE IMAGE" : " TO ATTACH IMAGE");
+                            color: root.faint_text;
+                            font-size: 10px;
+                            horizontal-stretch: 1;
+                        }
+                        if root.dev_metrics && !root.roundtrip.is-empty: Text {
+                            width: 70px;
+                            text: root.roundtrip;
+                            color: root.muted_text;
+                            font-size: 10px;
+                            horizontal-alignment: right;
+                        }
+                        if root.can-force-search: Rectangle {
+                            width: 82px;
+                            Text {
+                                text: "SEARCH WEB";
+                                color: root.accent;
+                                font-size: 10px;
+                                horizontal-alignment: center;
+                                vertical-alignment: center;
+                            }
+                            TouchArea {
+                                clicked => { root.submit("", true); }
+                            }
+                        }
+                        if !root.answer.is-empty: Rectangle {
+                            width: 36px;
+                            Text {
+                                text: "COPY";
+                                color: root.muted_text;
+                                font-size: 10px;
+                                horizontal-alignment: center;
+                                vertical-alignment: center;
+                            }
+                            TouchArea {
+                                clicked => { root.copy-answer(); }
+                            }
+                        }
+                    }
+                }
+
+                HorizontalLayout {
+                    height: 18px;
+                    Rectangle {
+                        width: 62px;
+                        Text {
+                            width: parent.width;
+                            height: parent.height;
+                            horizontal-alignment: left;
+                            text: "Feedback";
+                            color: feedback-area.has-hover ? root.accent : root.muted_text;
+                            font-size: 10px;
+                            vertical-alignment: center;
+                        }
+                        feedback-area := TouchArea {
+                            mouse-cursor: pointer;
+                            clicked => { root.open-feedback(); }
+                        }
+                    }
+                    Text {
+                        text: root.status;
+                        color: root.muted_text;
+                        font-size: 10px;
+                        horizontal-stretch: 1;
+                        overflow: elide;
+                    }
+                    if !root.update_available.is-empty: Rectangle {
+                        width: 112px;
+                        Text {
+                            text: root.update_available;
+                            color: root.accent;
+                            font-size: 10px;
+                            horizontal-alignment: right;
+                            vertical-alignment: center;
+                        }
+                        TouchArea {
+                            clicked => { root.open-releases(); }
+                        }
+                    }
+                }
+            }
+        }
+
     }
 
     export component InstallDialog inherits Window {
@@ -133,19 +532,16 @@ slint::slint! {
 
     export component FindOutTray inherits SystemTrayIcon {
         icon: @image-url("../assets/findout-tray.svg");
-        tooltip: root.local-trial ? "FindOut Monolith" : "FindOut";
-        title: root.local-trial ? "FindOut Monolith" : "FindOut";
-        in property <bool> local-trial: false;
+        tooltip: "FindOut";
+        title: "FindOut";
+        in property <int> theme: 0;
 
         callback show-window();
+        callback select-theme(int);
         callback quit();
         callback install();
         callback uninstall();
         callback toggle-autostart();
-        callback toggle-motion();
-        callback toggle-theme();
-        in property <bool> light-theme: false;
-        in property <bool> reduced-motion: false;
         in property <bool> installed: false;
         in property <bool> autostart: false;
 
@@ -156,27 +552,33 @@ slint::slint! {
             }
             MenuSeparator { }
             MenuItem {
-                title: "Light theme";
+                title: "Light";
                 checkable: true;
-                checked: root.light-theme;
-                activated => { root.toggle-theme(); }
+                checked: root.theme == 0;
+                activated => { root.select-theme(0); }
             }
             MenuItem {
-                title: "Reduce motion";
+                title: "Dark";
                 checkable: true;
-                checked: root.reduced-motion;
-                activated => { root.toggle-motion(); }
+                checked: root.theme == 1;
+                activated => { root.select-theme(1); }
             }
             MenuItem {
-                title: root.local-trial ? "Monolith · local preview" : root.installed ? "Start when I sign in" : "Install FindOut…";
-                enabled: !root.local-trial;
+                title: "Retro";
+                checkable: true;
+                checked: root.theme == 2;
+                activated => { root.select-theme(2); }
+            }
+            MenuSeparator { }
+            MenuItem {
+                title: root.installed ? "Start when I sign in" : "Install FindOut…";
                 checkable: root.installed;
                 checked: root.autostart;
                 activated => { if root.installed { root.toggle-autostart(); } else { root.install(); } }
             }
             MenuItem {
                 title: "Uninstall FindOut…";
-                enabled: root.installed && !root.local-trial;
+                enabled: root.installed;
                 activated => { root.uninstall(); }
             }
             MenuSeparator { }
@@ -230,8 +632,6 @@ struct HistoryTurn {
     answer: String,
     searched: bool,
     had_image: bool,
-    #[serde(default)]
-    answered_at: u64,
 }
 
 impl HistoryTurn {
@@ -392,7 +792,6 @@ impl Conversation {
             answer: answer.into(),
             searched,
             had_image: request.image.is_some(),
-            answered_at: unix_seconds(),
         });
         // Rebuild from the original context so SEARCH WEB replaces its answer.
         self.turns = request.previous_turns.clone();
@@ -410,7 +809,6 @@ impl Conversation {
         self.active = None;
     }
 
-    #[cfg(test)]
     fn transcript(&self, index: usize) -> String {
         self.recent
             .get(index)
@@ -444,92 +842,6 @@ impl Conversation {
         self.last_request = None; // Images are deliberately not retained in history.
         true
     }
-}
-
-fn unix_seconds() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs()
-}
-
-fn relative_age(timestamp: u64, now: u64) -> String {
-    if timestamp == 0 {
-        return String::new();
-    } // Older history has no timestamps.
-    let elapsed = now.saturating_sub(timestamp);
-    match elapsed {
-        0..60 => "Just now".into(),
-        60..3600 => format!("{}m ago", elapsed / 60),
-        3600..86400 => format!("{}h ago", elapsed / 3600),
-        86400..172800 => "Yesterday".into(),
-        _ => format!("{}d ago", elapsed / 86400),
-    }
-}
-
-fn recent_sessions(c: &Conversation) -> slint::ModelRc<RecentSession> {
-    let now = unix_seconds();
-    let rows: Vec<_> = c
-        .recent
-        .iter()
-        .rev()
-        .map(|thread| RecentSession {
-            title: thread
-                .first()
-                .map(|t| t.query.clone())
-                .unwrap_or_default()
-                .into(),
-            age: relative_age(thread.last().map(|t| t.answered_at).unwrap_or(0), now).into(),
-            transcript: thread
-                .iter()
-                .enumerate()
-                .map(|(n, turn)| {
-                    if n == 0 {
-                        format!(
-                            "{}{}{}",
-                            if turn.searched { "🌐 " } else { "" },
-                            if turn.had_image { "📷 " } else { "" },
-                            turn.answer
-                        )
-                    } else {
-                        turn.display()
-                    }
-                })
-                .collect::<Vec<_>>()
-                .join("\n\n")
-                .into(),
-        })
-        .collect();
-    std::rc::Rc::new(slint::VecModel::from(rows)).into()
-}
-
-fn present_answer(
-    ui: &FindOutWindow,
-    question: &str,
-    answer: &str,
-    searched: bool,
-    had_image: bool,
-) {
-    // Restrict oversized typography to genuinely short, single-line answers.
-    ui.set_short_answer(answer.chars().count() <= 18 && !answer.contains('\n'));
-    ui.set_answer(answer.into());
-    ui.set_submitted_question(question.to_uppercase().into());
-    ui.set_sources(
-        match (searched, had_image) {
-            (true, true) => "Used: web, image",
-            (true, false) => "Used: web",
-            (false, true) => "Used: image",
-            (false, false) => "",
-        }
-        .into(),
-    );
-}
-
-fn reset_presentation(ui: &FindOutWindow) {
-    ui.set_submitted_question("".into());
-    ui.set_sources("".into());
-    ui.set_recent_open(false);
-    ui.set_expanded_session(-1);
 }
 
 #[derive(Deserialize)]
@@ -1031,9 +1343,6 @@ fn github_release_urls() -> Option<(String, String)> {
 }
 
 fn check_for_update() -> Option<GitHubRelease> {
-    if cfg!(feature = "local-trial") {
-        return None;
-    }
     let (api_url, _) = github_release_urls()?;
     let response = agent()
         .get(&api_url)
@@ -1194,8 +1503,7 @@ fn activate(origin: String, key: String, ui: Weak<FindOutWindow>, in_flight: Arc
                     Ok(()) => {
                         ui.set_activated(true);
                         ui.set_activation_key("".into());
-                        ui.set_status("".into());
-                        ui.invoke_focus_input();
+                        ui.set_status("Activated".into());
                     }
                     Err(error) => ui.set_status(error.into()),
                 }
@@ -1340,13 +1648,12 @@ fn query(
                         }
                         ui.set_has_image(false);
                         ui.set_question("".into());
-                        present_answer(
-                            &ui,
-                            &request.query,
-                            &answer.body.answer,
-                            answer.body.searched,
-                            request.image.is_some(),
-                        );
+                        let transcript = conversation
+                            .lock()
+                            .ok()
+                            .and_then(|c| c.active.map(|i| c.transcript(i)))
+                            .unwrap_or(answer.body.answer);
+                        ui.set_answer(transcript.into());
                         ui.set_can_force_search(!answer.body.searched);
                         ui.set_status(
                             answer
@@ -1354,10 +1661,15 @@ fn query(
                                 .quota
                                 .as_ref()
                                 .map(quota_status)
-                                .unwrap_or_default()
+                                .unwrap_or_else(|| {
+                                    if answer.body.searched {
+                                        "Searched".to_owned()
+                                    } else {
+                                        "From knowledge".to_owned()
+                                    }
+                                })
                                 .into(),
                         );
-                        ui.invoke_focus_input();
                         if let Some(warning) = history_warning {
                             ui.set_status(warning.into());
                         }
@@ -1375,59 +1687,19 @@ fn query(
 }
 
 #[cfg(target_os = "linux")]
-fn read_copied_image(uris: &[impl AsRef<str>]) -> Result<ImagePayload, String> {
-    if uris.len() != 1 {
-        return Err("Copy one PNG or JPEG image at a time".to_owned());
-    }
-    let uri = url::Url::parse(uris[0].as_ref())
-        .map_err(|_| "Invalid copied file reference".to_owned())?;
-    let path = uri
-        .to_file_path()
-        .map_err(|_| "Only local image files can be attached".to_owned())?;
-    // Reject directories and special files before opening (a FIFO could block).
-    let metadata =
-        std::fs::metadata(&path).map_err(|_| "Could not read the copied image file".to_owned())?;
-    if !metadata.is_file() {
-        return Err("Copy a PNG or JPEG image file".to_owned());
-    }
-    if metadata.len() == 0 || metadata.len() > MAX_IMAGE_BYTES as u64 {
-        return Err("Image is too large or empty".to_owned());
-    }
-    let mut bytes = Vec::new();
-    std::fs::File::open(path)
-        .and_then(|file| {
-            file.take(MAX_IMAGE_BYTES as u64 + 1)
-                .read_to_end(&mut bytes)
-        })
-        .map_err(|_| "Could not read the copied image file".to_owned())?;
-    let mime_type = match image::guess_format(&bytes) {
-        Ok(ImageFormat::Png) => "image/png",
-        Ok(ImageFormat::Jpeg) => "image/jpeg",
-        _ => return Err("Unsupported image type — copy PNG or JPEG".to_owned()),
-    };
-    normalize_image_bytes(mime_type, &bytes)
-}
-
-#[cfg(target_os = "linux")]
-fn read_clipboard_image() -> Result<Option<ImagePayload>, String> {
+fn read_clipboard_image() -> Result<Option<Vec<u8>>, String> {
     gtk::init().map_err(|_| "Clipboard is unavailable".to_owned())?;
-    let clipboard = gtk::Clipboard::get(&gtk::gdk::SELECTION_CLIPBOARD);
-    if let Some(pixbuf) = clipboard.wait_for_image() {
-        let bytes = pixbuf
-            .save_to_bufferv("png", &[])
-            .map_err(|_| "Could not read the clipboard image".to_owned())?;
-        return normalize_image_bytes("image/png", &bytes).map(Some);
-    }
-    // Thunar offers file references as well as a plain-text path. Never interpret
-    // arbitrary clipboard text as permission to read a local file.
-    if clipboard.wait_is_uris_available() {
-        return read_copied_image(&clipboard.wait_for_uris()).map(Some);
-    }
-    Ok(None)
+    let Some(pixbuf) = gtk::Clipboard::get(&gtk::gdk::SELECTION_CLIPBOARD).wait_for_image() else {
+        return Ok(None);
+    };
+    pixbuf
+        .save_to_bufferv("png", &[])
+        .map(Some)
+        .map_err(|_| "Could not read the clipboard image".to_owned())
 }
 
 #[cfg(not(target_os = "linux"))]
-fn read_clipboard_image() -> Result<Option<ImagePayload>, String> {
+fn read_clipboard_image() -> Result<Option<Vec<u8>>, String> {
     let mut clipboard =
         arboard::Clipboard::new().map_err(|_| "Clipboard is unavailable".to_owned())?;
     let image = match clipboard.get_image() {
@@ -1449,27 +1721,11 @@ fn read_clipboard_image() -> Result<Option<ImagePayload>, String> {
     }
     let rgba = RgbaImage::from_raw(width, height, image.bytes.into_owned())
         .ok_or_else(|| "Clipboard image is out of range".to_owned())?;
-    normalize_rgba_image(rgba).map(Some)
-}
-
-// Return whether the paste was consumed, including file/image errors, so the
-// text input cannot also insert the clipboard's path representation.
-fn paste_clipboard_image(ui: &FindOutWindow, attached_image: &Mutex<Option<ImagePayload>>) -> bool {
-    match read_clipboard_image() {
-        Ok(Some(payload)) => {
-            if let Ok(mut image) = attached_image.lock() {
-                *image = Some(payload);
-            }
-            ui.set_has_image(true);
-            ui.set_status("Image attached — describe what to do with it".into());
-            true
-        }
-        Ok(None) => false,
-        Err(error) => {
-            ui.set_status(error.into());
-            true
-        }
-    }
+    let payload = normalize_rgba_image(rgba)?;
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(payload.data)
+        .map_err(|_| "Could not encode the clipboard image".to_owned())?;
+    Ok(Some(bytes))
 }
 
 #[cfg(target_os = "linux")]
@@ -1696,9 +1952,7 @@ fn show_window(ui: &FindOutWindow, generation: &Arc<Mutex<u64>>, focused: &Arc<A
     focused.store(false, Ordering::Release);
     next_generation(generation);
     place_popup(ui);
-    ui.set_popup_visible(true);
     let _ = ui.show();
-    ui.invoke_focus_input();
     place_popup(ui);
     ui.window()
         .with_winit_window(|window| window.focus_window());
@@ -1721,7 +1975,6 @@ fn hide_window(
     }
     let hide_generation = next_generation(generation);
     ui.set_activation_key("".into());
-    ui.set_popup_visible(false);
     let _ = ui.hide();
 
     let ui = ui.as_weak();
@@ -1741,7 +1994,6 @@ fn hide_window(
             ui.set_busy(false);
             ui.set_has_image(false);
             ui.set_can_force_search(false);
-            reset_presentation(&ui);
             ui.set_answer("".into());
             ui.set_roundtrip("".into());
             ui.set_question("".into());
@@ -1793,36 +2045,6 @@ fn wait_for_tray_host() -> Result<(), String> {
     Err("No desktop tray host became ready; enable a StatusNotifier/AppIndicator tray host and restart FindOut".into())
 }
 
-fn bind_tray_motion(tray: &FindOutTray, ui: &FindOutWindow) {
-    tray.set_reduced_motion(!ui.get_motion());
-    tray.on_toggle_motion({
-        let ui = ui.as_weak();
-        let tray = tray.as_weak();
-        move || {
-            if let (Some(ui), Some(tray)) = (ui.upgrade(), tray.upgrade()) {
-                let motion = !ui.get_motion();
-                ui.set_motion(motion);
-                tray.set_reduced_motion(!motion);
-            }
-        }
-    });
-}
-
-fn bind_tray_theme(tray: &FindOutTray, ui: &FindOutWindow) {
-    tray.set_light_theme(ui.get_light_theme());
-    tray.on_toggle_theme({
-        let ui = ui.as_weak();
-        let tray = tray.as_weak();
-        move || {
-            if let (Some(ui), Some(tray)) = (ui.upgrade(), tray.upgrade()) {
-                let light = !ui.get_light_theme();
-                ui.set_light_theme(light);
-                tray.set_light_theme(light);
-            }
-        }
-    });
-}
-
 fn create_tray(
     ui: &FindOutWindow,
     generation: &Arc<Mutex<u64>>,
@@ -1872,9 +2094,7 @@ fn create_tray(
                 }
             }
         });
-        tray.set_local_trial(cfg!(feature = "local-trial"));
-        bind_tray_motion(tray, ui);
-        bind_tray_theme(tray, ui);
+        tray.set_theme(ui.get_theme());
         tray.on_show_window({
             let ui = ui.as_weak();
             let generation = generation.clone();
@@ -1882,6 +2102,22 @@ fn create_tray(
             move || {
                 if let Some(ui) = ui.upgrade() {
                     show_window(&ui, &generation, &focused);
+                }
+            }
+        });
+        tray.on_select_theme({
+            let ui = ui.as_weak();
+            let tray = tray.as_weak();
+            move |theme| {
+                let theme = match theme {
+                    THEME_LIGHT | THEME_DARK | THEME_RETRO => theme,
+                    _ => THEME_LIGHT,
+                };
+                if let Some(ui) = ui.upgrade() {
+                    ui.set_theme(theme);
+                }
+                if let Some(tray) = tray.upgrade() {
+                    tray.set_theme(theme);
                 }
             }
         });
@@ -1895,18 +2131,6 @@ fn create_tray(
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // Keep bundled font notices available even in standalone updater binaries.
-    if std::env::args().any(|arg| arg == "--licenses") {
-        println!(concat!(
-            "Anton\n",
-            include_str!("../assets/fonts/anton-OFL.txt"),
-            "\nInter\n",
-            include_str!("../assets/fonts/inter-OFL.txt"),
-            "\nJetBrains Mono\n",
-            include_str!("../assets/fonts/jetbrainsmono-OFL.txt"),
-        ));
-        return Ok(());
-    }
     let origin = api_origin()?;
     let _instance_lock = lifecycle::instance_lock().map_err(|e| e.to_string())?;
     let backend = slint::BackendSelector::new().backend_name("winit-software".into());
@@ -1943,7 +2167,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     manager.register(hotkey)?;
 
     let ui = FindOutWindow::new()?;
-    ui.set_local_trial(cfg!(feature = "local-trial"));
     ui.set_dev_metrics(cfg!(feature = "dev-metrics"));
     if cfg!(target_os = "macos") {
         ui.set_shortcut_label("OPTION + SPACE".into());
@@ -2026,7 +2249,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         }
     });
-    if !cfg!(debug_assertions) && !cfg!(feature = "local-trial") && !lifecycle::installed() {
+    if !cfg!(debug_assertions) && !lifecycle::installed() {
         install_dialog.show()?;
     }
 
@@ -2094,10 +2317,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let request_id = next_generation(&request_state);
             if let Some(ui) = ui.upgrade() {
                 ui.set_busy(true);
-                ui.set_submitted_question(request.query.to_uppercase().into());
-                ui.invoke_animate_question();
-                ui.set_sources("".into());
-                ui.set_recent_open(false);
                 ui.set_answer("".into());
                 ui.set_roundtrip("".into());
                 ui.set_can_force_search(false);
@@ -2127,9 +2346,33 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     ui.on_paste_image({
         let ui = ui.as_weak();
         let attached_image = attached_image.clone();
-        move || {
-            ui.upgrade()
-                .is_some_and(|ui| paste_clipboard_image(&ui, &attached_image))
+        move || match read_clipboard_image() {
+            Ok(Some(bytes)) => match normalize_image_bytes("image/png", &bytes) {
+                Ok(payload) => {
+                    if let Ok(mut image) = attached_image.lock() {
+                        *image = Some(payload);
+                    }
+                    if let Some(ui) = ui.upgrade() {
+                        ui.set_has_image(true);
+                        ui.set_status("Image attached — describe what to do with it".into());
+                    }
+                }
+                Err(error) => {
+                    if let Some(ui) = ui.upgrade() {
+                        ui.set_status(error.into());
+                    }
+                }
+            },
+            Ok(None) => {
+                if let Some(ui) = ui.upgrade() {
+                    ui.set_status("No image on the clipboard".into());
+                }
+            }
+            Err(error) => {
+                if let Some(ui) = ui.upgrade() {
+                    ui.set_status(error.into());
+                }
+            }
         }
     });
 
@@ -2221,74 +2464,110 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     });
 
-    ui.on_copy_text({
-        let ui = ui.as_weak();
-        move |text| copy_answer(text.to_string(), ui.clone())
-    });
+    let history_window = HistoryWindow::new()?;
     let history_revision = std::rc::Rc::new(std::cell::Cell::new(0u64));
     ui.on_open_history({
         let revision = history_revision.clone();
-        let ui = ui.as_weak();
+        let window = history_window.as_weak();
         let conversation = conversation.clone();
         move || {
-            if let Some(ui) = ui.upgrade() {
-                if ui.get_busy() {
-                    return;
-                }
+            if let Some(w) = window.upgrade() {
                 let c = conversation.lock().unwrap();
                 revision.set(c.revision);
-                ui.set_sessions(recent_sessions(&c));
-                ui.set_expanded_session(-1);
-                ui.set_recent_open(true);
+                let titles: Vec<slint::SharedString> = c
+                    .recent
+                    .iter()
+                    .rev()
+                    .map(|t| {
+                        let title: String = t
+                            .first()
+                            .map(|t| t.query.chars().take(65).collect())
+                            .unwrap_or_default();
+                        format!(
+                            "{} · {} {}",
+                            title,
+                            t.len(),
+                            if t.len() == 1 { "answer" } else { "answers" }
+                        )
+                        .into()
+                    })
+                    .collect();
+                w.set_titles(std::rc::Rc::new(slint::VecModel::from(titles)).into());
+                w.set_selected(-1);
+                w.set_transcript(
+                    "Select a conversation. Text is saved on this device; images are not saved."
+                        .into(),
+                );
+                let _ = w.show();
             }
         }
     });
-    ui.on_resume_session({
+    history_window.on_select({
         let revision = history_revision.clone();
+        let window = history_window.as_weak();
+        let conversation = conversation.clone();
+        move |i| {
+            if let Some(w) = window.upgrade() {
+                let c = conversation.lock().unwrap();
+                if c.revision != revision.get() {
+                    w.set_selected(-1);
+                    w.set_transcript(
+                        "History changed. Close this window and reopen Recent.".into(),
+                    );
+                    return;
+                }
+                if i < 0 {
+                    return;
+                }
+                if let Some(index) = c.recent.len().checked_sub(i as usize + 1) {
+                    w.set_selected(index as i32);
+                    w.set_transcript(c.transcript(index).into());
+                }
+            }
+        }
+    });
+    history_window.on_resume({
+        let revision = history_revision.clone();
+        let window = history_window.as_weak();
         let ui = ui.as_weak();
         let conversation = conversation.clone();
         let generation = generation.clone();
         let request_generation = request_generation.clone();
         let attached_image = attached_image.clone();
-        move |row| {
-            if let Some(ui) = ui.upgrade() {
-                if ui.get_busy() || row < 0 {
+        move || {
+            if let (Some(w), Some(ui)) = (window.upgrade(), ui.upgrade()) {
+                if ui.get_busy() {
                     return;
                 }
                 let mut c = conversation.lock().unwrap();
                 if c.revision != revision.get() {
-                    ui.set_status("History changed. Reopen Recent.".into());
+                    w.set_selected(-1);
+                    w.set_transcript(
+                        "History changed. Close this window and reopen Recent.".into(),
+                    );
                     return;
                 }
-                let Some(index) = c.recent.len().checked_sub(row as usize + 1) else {
-                    return;
-                };
-                if c.resume(index) {
+                if c.resume(w.get_selected() as usize) {
                     next_generation(&generation);
                     next_generation(&request_generation);
-                    let last = c.recent.last().unwrap().last().unwrap();
-                    present_answer(
-                        &ui,
-                        &last.query,
-                        &last.answer,
-                        last.searched,
-                        last.had_image,
-                    );
-                    ui.set_recent_open(false);
-                    ui.set_status(c.save_history().err().unwrap_or_default().into());
+                    ui.set_answer(c.transcript(c.active.unwrap()).into());
                     ui.set_can_force_search(false);
                     ui.set_question("".into());
                     ui.set_has_image(false);
                     *attached_image.lock().unwrap() = None;
+                    let _ = w.hide();
+                    let _ = ui.show();
+                    ui.window().with_winit_window(|w| w.focus_window());
                 }
             }
         }
     });
-    ui.on_clear_history({
+    history_window.on_clear_history({
+        let window = history_window.as_weak();
         let ui = ui.as_weak();
         let conversation = conversation.clone();
         move || {
-            if let Some(ui) = ui.upgrade() {
+            if let (Some(w), Some(ui)) = (window.upgrade(), ui.upgrade()) {
                 if ui.get_busy() {
                     return;
                 }
@@ -2296,18 +2575,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 c.clear();
                 c.recent.clear();
                 c.revision += 1;
-                ui.set_sessions(recent_sessions(&c));
-                ui.set_expanded_session(-1);
-                ui.set_answer("".into());
-                ui.set_submitted_question("".into());
-                ui.set_sources("".into());
-                ui.set_can_force_search(false);
-                ui.set_status(
-                    c.save_history()
-                        .err()
-                        .unwrap_or_else(|| "History cleared.".into())
-                        .into(),
+                if let Err(error) = c.save_history() {
+                    w.set_transcript(error.into());
+                    return;
+                }
+                w.set_titles(
+                    std::rc::Rc::new(slint::VecModel::<slint::SharedString>::default()).into(),
                 );
+                w.set_selected(-1);
+                w.set_transcript("History cleared.".into());
+                ui.set_answer("".into());
+                ui.set_can_force_search(false);
             }
         }
     });
@@ -2321,13 +2599,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     return;
                 }
                 conversation.lock().unwrap().clear();
-                reset_presentation(&ui);
                 *attached_image.lock().unwrap() = None;
                 ui.set_answer("".into());
                 ui.set_question("".into());
                 ui.set_has_image(false);
                 ui.set_can_force_search(false);
-                ui.set_status("".into());
+                ui.set_status("New conversation".into());
             }
         }
     });
@@ -2610,6 +2887,104 @@ mod tests {
         std::fs::remove_dir(dir).unwrap();
     }
 
+    #[cfg(target_os = "linux")]
+    #[test]
+    #[ignore = "requires a dedicated disposable X11 session"]
+    fn v015_dialogs_ui() {
+        use winit::platform::x11::EventLoopBuilderExtX11;
+        let mut event_loop =
+            winit::event_loop::EventLoop::<slint::winit_030::SlintEvent>::with_user_event();
+        event_loop.with_x11().with_any_thread(true);
+        slint::BackendSelector::new()
+            .backend_name("winit-software".into())
+            .with_winit_event_loop_builder(event_loop)
+            .select()
+            .unwrap();
+        let ui = FindOutWindow::new().unwrap();
+        ui.set_activated(true);
+        ui.set_answer("How do I update Linux?\n🌐 Use the package manager.\n\nWhat about this screenshot?\n📷 Open Software Update in Settings.".into());
+        let feedback = FeedbackWindow::new().unwrap();
+        feedback.set_message("I’m having trouble activating FindOut.".into());
+        let history = HistoryWindow::new().unwrap();
+        history.set_titles(
+            std::rc::Rc::new(slint::VecModel::from(vec![
+                "How do I update Linux? · 2 answers".into(),
+                "Where is Settings? · 1 answer".into(),
+            ]))
+            .into(),
+        );
+        history.set_transcript(ui.get_answer());
+        ui.on_open_feedback({
+            let w = feedback.as_weak();
+            move || {
+                w.upgrade().unwrap().show().unwrap();
+            }
+        });
+        ui.on_open_history({
+            let w = history.as_weak();
+            move || {
+                w.upgrade().unwrap().show().unwrap();
+            }
+        });
+        feedback.on_send({
+            let w = feedback.as_weak();
+            move || {
+                w.upgrade()
+                    .unwrap()
+                    .set_status("Feedback sent. Test only; no email was sent.".into());
+            }
+        });
+        feedback.on_dismiss({
+            let w = feedback.as_weak();
+            move || {
+                w.upgrade().unwrap().hide().unwrap();
+            }
+        });
+        ui.show().unwrap();
+        Timer::single_shot(Duration::from_secs(1), {
+            let ui = ui.as_weak();
+            move || {
+                ui.upgrade().unwrap().invoke_open_history();
+            }
+        });
+        Timer::single_shot(Duration::from_secs(2), {
+            let history = history.as_weak();
+            let ui = ui.as_weak();
+            move || {
+                assert!(history.upgrade().unwrap().window().is_visible());
+                if std::env::var_os("FINDOUT_UI_CAPTURE").is_some() {
+                    assert!(Command::new("import")
+                        .args(["-window", "root", "/tmp/findout-v015-history.png"])
+                        .status()
+                        .unwrap()
+                        .success());
+                }
+                history.upgrade().unwrap().hide().unwrap();
+                ui.upgrade().unwrap().invoke_open_feedback();
+            }
+        });
+        Timer::single_shot(Duration::from_secs(3), {
+            let feedback = feedback.as_weak();
+            move || {
+                let w = feedback.upgrade().unwrap();
+                assert!(w.window().is_visible());
+                w.invoke_send();
+                assert!(w.get_status().contains("Feedback sent"));
+            }
+        });
+        Timer::single_shot(Duration::from_secs(4), || {
+            if std::env::var_os("FINDOUT_UI_CAPTURE").is_some() {
+                assert!(Command::new("import")
+                    .args(["-window", "root", "/tmp/findout-v015-feedback.png"])
+                    .status()
+                    .unwrap()
+                    .success());
+            }
+            slint::quit_event_loop().unwrap();
+        });
+        slint::run_event_loop_until_quit().unwrap();
+    }
+
     #[test]
     fn followups_serialize_successful_turns_in_order() {
         let mut conversation = Conversation::default();
@@ -2755,8 +3130,6 @@ mod tests {
             .unwrap();
         let ui = FindOutWindow::new().unwrap();
         ui.set_activated(true);
-        ui.set_motion(false);
-        ui.set_has_image(true);
         ui.set_dev_metrics(cfg!(feature = "dev-metrics"));
         ui.set_roundtrip("RT 1.2 s".into());
         ui.set_answer(
@@ -2792,48 +3165,48 @@ mod tests {
             window.dispatch_event(WindowEvent::KeyReleased { text });
         };
         // Typing at the end must change the visible field, without touching the buttons.
-        click(80., 273.);
-        let buttons = region(470, 260, 60, 30);
+        click(80., 80.);
+        let buttons = region(435, 70, 100, 30);
         key("a long question with lots of words ".repeat(15).into());
-        let before_typing = region(55, 260, 345, 25);
+        let before_typing = region(34, 72, 390, 25);
         key("VISIBLE END".into());
         assert!(
-            before_typing != region(55, 260, 345, 25),
+            before_typing != region(34, 72, 390, 25),
             "typing must stay visible"
         );
         assert!(
-            buttons == region(470, 260, 60, 30),
+            buttons == region(435, 70, 100, 30),
             "text must not overlap buttons"
         );
-        let end = region(55, 260, 345, 25);
+        let end = region(34, 72, 390, 25);
         key(Key::Home.into());
         assert!(
-            end != region(55, 260, 345, 25),
+            end != region(34, 72, 390, 25),
             "Home must scroll to the start"
         );
         // Selecting a visible line must not move the answer under the pointer.
-        let lower_lines = region(24, 155, 470, 55);
-        click(80., 110.);
+        let lower_lines = region(34, 175, 470, 60);
+        click(80., 150.);
         assert!(
-            lower_lines == region(24, 155, 470, 55),
+            lower_lines == region(34, 175, 470, 60),
             "visible text must not jump on click"
         );
         // Wheel and keyboard navigation must reach later parts of a long answer.
-        let top = region(24, 80, 470, 130);
+        let top = region(34, 130, 470, 110);
         window.dispatch_event(WindowEvent::PointerScrolled {
             position: slint::LogicalPosition::new(100., 170.),
             delta_x: 0.,
             delta_y: -200.,
         });
         assert!(
-            top != region(24, 80, 470, 130),
+            top != region(34, 130, 470, 110),
             "wheel must scroll the answer"
         );
         click(80., 160.);
-        let before_page = region(24, 80, 470, 130);
+        let before_page = region(34, 130, 470, 110);
         key(Key::PageDown.into());
         assert!(
-            before_page != region(24, 80, 470, 130),
+            before_page != region(34, 130, 470, 110),
             "PageDown must scroll the answer"
         );
         ui.hide().unwrap();
@@ -3059,7 +3432,7 @@ mod tests {
             scale_factor: 1.0,
         };
         let position = popup_position(geometry, POPUP_WIDTH, POPUP_HEIGHT);
-        assert_eq!(position, slint::PhysicalPosition::new(1_370, 770));
+        assert_eq!(position, slint::PhysicalPosition::new(1_360, 760));
     }
 
     #[test]
