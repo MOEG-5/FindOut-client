@@ -6,7 +6,8 @@ share the layout, motion and interactions, and the choice lasts for the running
 session. The app uses native Slint with bundled fonts, without a browser or
 runtime font downloads.
 
-The [v0.1.5 UI](../archive/desktop-v0.1.5/) is preserved separately for reference.
+The [v0.1.5 UI](https://github.com/MOEG-5/FindOut-client/tree/v0.1.5)
+is preserved in its release tag for reference.
 Normal release builds retain installation, autostart and automatic updates.
 The optional `local-trial` feature only changes packaging and lifecycle behavior;
 it uses the same UI as production.

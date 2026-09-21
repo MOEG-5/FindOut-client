@@ -14,7 +14,7 @@ When it asks for an activation key, simply enter:
 
 **trial**
 
-You'll receive a free trial with **20 requests per day**. Your allowance resets automatically each day.
+You'll receive free daily usage. The server reports your current allowance and reset time.
 
 No API keys or separate accounts are needed.
 
@@ -43,7 +43,8 @@ default. Uncheck **Light theme** in the tray menu for the dark variant; both
 themes keep the same layout and interactions. The selection applies for the
 running session.
 
-The [previous desktop UI](archive/desktop-v0.1.5/) is archived for reference.
+The previous desktop UI remains available in the
+[v0.1.5 tag](https://github.com/MOEG-5/FindOut-client/tree/v0.1.5).
 See [Monolith details](docs/monolith.md) for interactions, checks and the optional
 separate local preview launcher.
 

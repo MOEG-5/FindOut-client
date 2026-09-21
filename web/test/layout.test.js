@@ -4,6 +4,7 @@ import test from "node:test";
 
 const html = readFileSync(new URL("../index.html", import.meta.url), "utf8");
 const css = readFileSync(new URL("../styles.css", import.meta.url), "utf8");
+const serviceWorker = readFileSync(new URL("../sw.js", import.meta.url), "utf8");
 
 test("hidden UI cannot be resurrected by component display rules", () => {
   assert.match(css, /\[hidden\]\s*\{\s*display:\s*none\s*!important;/);
@@ -20,4 +21,9 @@ test("activated layout places answer then composer then recent history", () => {
 test("activation button is the final visible element in its view", () => {
   const view = html.match(/<section id="activationView"[\s\S]*?<\/section>/)?.[0] || "";
   assert.match(view, /<button id="activationButton"[\s\S]*?<\/button>\s*<\/form>\s*<\/section>$/);
+});
+
+test("offline shell includes the quota display module", () => {
+  assert.match(serviceWorker, /findout-shell-v0\.1\.5-2/);
+  assert.match(serviceWorker, /"\/quota\.js"/);
 });

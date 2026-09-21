@@ -13,7 +13,7 @@ function mockResponse() {
   };
 }
 
-async function withUpstream(callback) {
+async function withUpstream(callback, queryResponse = {}) {
   const seen = [];
   const server = createServer(async (request, response) => {
     let raw = "";
@@ -22,9 +22,18 @@ async function withUpstream(callback) {
     response.setHeader("Content-Type", "application/json");
     if (request.url === "/v1/activate") response.end(JSON.stringify({ device_token: "t".repeat(64) }));
     else {
-      response.setHeader("X-FindOut-Daily-Limit", "20");
-      response.setHeader("X-FindOut-Daily-Remaining", "19");
-      response.end(JSON.stringify({ answer: "Test answer", searched: false }));
+      const {
+        status = 200,
+        headers = {
+          "X-FindOut-Daily-Limit": "37",
+          "X-FindOut-Daily-Remaining": "12",
+          "X-FindOut-Daily-Reset": "2026-09-08T00:00:00.000Z",
+        },
+        body = { answer: "Test answer", searched: false },
+      } = queryResponse;
+      for (const [name, value] of Object.entries(headers)) response.setHeader(name, value);
+      response.statusCode = status;
+      response.end(JSON.stringify(body));
     }
   });
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
@@ -49,13 +58,39 @@ test("activation hides the upstream bearer token in an HttpOnly cookie", async (
   assert.equal(seen[0].headers["x-findout-protocol"], "1");
 }));
 
-test("query restores authorization and passes usage headers", async () => withUpstream(async (seen) => {
+test("query restores authorization and forwards server-provided usage headers", async () => withUpstream(async (seen) => {
   const response = mockResponse();
   await query({ method: "POST", cookies: { findout_session: "secret-token" }, body: { query: "Why?", previous_turns: [], force_search: false } }, response);
   assert.equal(response.statusCode, 200);
   assert.equal(response.body.answer, "Test answer");
-  assert.equal(response.headers["x-findout-daily-remaining"], "19");
+  assert.equal(response.headers["x-findout-daily-limit"], "37");
+  assert.equal(response.headers["x-findout-daily-remaining"], "12");
+  assert.equal(response.headers["x-findout-daily-reset"], "2026-09-08T00:00:00.000Z");
   assert.equal(seen[0].headers.authorization, "Bearer secret-token");
+}));
+
+test("quota-exhaustion responses preserve authoritative headers without clearing the session", async () => withUpstream(async () => {
+  const response = mockResponse();
+  await query({ method: "POST", cookies: { findout_session: "secret-token" }, body: { query: "Why?" } }, response);
+  assert.equal(response.statusCode, 429);
+  assert.deepEqual({
+    limit: response.headers["x-findout-daily-limit"],
+    remaining: response.headers["x-findout-daily-remaining"],
+    reset: response.headers["x-findout-daily-reset"],
+  }, {
+    limit: "37",
+    remaining: "0",
+    reset: "2026-09-08T00:00:00.000Z",
+  });
+  assert.equal(response.headers["set-cookie"], undefined);
+}, {
+  status: 429,
+  headers: {
+    "X-FindOut-Daily-Limit": "37",
+    "X-FindOut-Daily-Remaining": "0",
+    "X-FindOut-Daily-Reset": "2026-09-08T00:00:00.000Z",
+  },
+  body: { message: "Daily free limit reached; try again after midnight UTC" },
 }));
 
 test("query requires an activation cookie", async () => {

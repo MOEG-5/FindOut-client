@@ -8,6 +8,7 @@ import {
   normalizeHistory,
   randomDeviceId,
 } from "./logic.js";
+import { quotaExhaustionStatus, quotaStatus } from "./quota.js";
 
 const $ = (selector) => document.querySelector(selector);
 const elements = {
@@ -32,6 +33,14 @@ let attachedPreviewUrl = null;
 let lastRequest = null;
 let lastAnswer = null;
 let deferredInstallPrompt = null;
+
+class ApiError extends Error {
+  constructor(message, status, headers) {
+    super(message);
+    this.status = status;
+    this.headers = headers;
+  }
+}
 
 function loadThreads() {
   try {
@@ -130,7 +139,11 @@ async function api(path, options = {}) {
   try { body = await response.json(); } catch { /* server returned no JSON */ }
   if (!response.ok) {
     if (response.status === 401 && path !== "/api/activate") setActivated(false);
-    throw new Error(body.message || (response.status === 401 ? "Activation required" : "FindOut could not complete that request"));
+    throw new ApiError(
+      body.message || (response.status === 401 ? "Activation required" : "FindOut could not complete that request"),
+      response.status,
+      response.headers,
+    );
   }
   return { body, headers: response.headers };
 }
@@ -179,7 +192,10 @@ async function ask({ query, forceSearch, image, retry = false }) {
     resizeComposer();
     clearImage();
   } catch (error) {
-    elements.queryStatus.textContent = error.message;
+    const quotaStatusText = error instanceof ApiError && error.status === 429
+      ? quotaExhaustionStatus(error.headers)
+      : "";
+    elements.queryStatus.textContent = quotaStatusText || error.message;
   } finally { setBusy(false); }
 }
 
@@ -190,9 +206,7 @@ function showAnswer(answer, searched, headers = null, hadImage = false) {
   elements.copyButton.hidden = false;
   elements.answerActions.hidden = false;
   elements.searchWebButton.hidden = searched;
-  const remaining = headers?.get("x-findout-daily-remaining");
-  const limit = headers?.get("x-findout-daily-limit");
-  elements.allowance.textContent = remaining && limit ? `${remaining} OF ${limit} LEFT TODAY` : "";
+  elements.allowance.textContent = quotaStatus(headers);
   elements.answerView.scrollIntoView({ behavior: "smooth", block: "start" });
 }
 

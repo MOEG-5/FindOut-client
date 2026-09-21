@@ -9,3 +9,6 @@ gen/
 *.pem
 *.key
 .vercel
+
+# Historical local builds; deliberately not part of the release repository.
+/archive/

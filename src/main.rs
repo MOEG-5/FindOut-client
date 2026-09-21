@@ -974,8 +974,8 @@ fn quota_error(error: RequestError) -> String {
         RequestError::Http(429, _, metadata) if matches!(metadata.quota.as_ref(), Some(quota) if quota.remaining == 0) =>
         {
             format!(
-                "Daily limit reached · reset {}",
-                quota_reset(&metadata.quota.unwrap().reset)
+                "Daily limit reached · {}",
+                quota_status(metadata.quota.as_ref().unwrap())
             )
         }
         RequestError::Http(429, message, metadata) => metadata
@@ -3000,7 +3000,7 @@ mod tests {
                     retry_after: Some(30),
                 }
             )),
-            "Daily limit reached · reset 2026-09-08 00:00 UTC"
+            "Daily limit reached · 0/37 left · reset 2026-09-08 00:00 UTC"
         );
         assert_eq!(
             quota_error(RequestError::Http(
