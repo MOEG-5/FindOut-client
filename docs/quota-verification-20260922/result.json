@@ -1,0 +1,14 @@
+{
+  "passed": [
+    "01-before-activation",
+    "02-activated",
+    "03-current-quota",
+    "04-exhausted",
+    "05-restored",
+    "06-changed-backend-limit",
+    "07-error-without-quota"
+  ],
+  "activations": 1,
+  "queries": 4,
+  "environment": "private Xvfb, D-Bus, Secret Service and XDG directories; real desktop process restart"
+}

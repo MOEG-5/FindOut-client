@@ -192,6 +192,7 @@ async function ask({ query, forceSearch, image, retry = false }) {
     resizeComposer();
     clearImage();
   } catch (error) {
+    if (error instanceof ApiError) elements.allowance.textContent = quotaStatus(error.headers);
     const quotaStatusText = error instanceof ApiError && error.status === 429
       ? quotaExhaustionStatus(error.headers)
       : "";
@@ -415,10 +416,28 @@ updateNetworkStatus();
 renderHistory();
 
 const feedbackDialog = $("#feedbackDialog");
-$("#feedbackButton").addEventListener("click", () => feedbackDialog.showModal());
+const feedbackMessage = $("#feedbackMessage");
+const feedbackEmail = $("#feedbackEmail");
+const feedbackLicense = $("#feedbackLicense");
+const feedbackConsent = $("#feedbackConsent");
+$("#feedbackButton").addEventListener("click", () => {
+  feedbackConsent.checked = false;
+  $("#feedbackStatus").textContent = "";
+  feedbackDialog.showModal();
+});
 $("#feedbackClose").addEventListener("click", () => feedbackDialog.close());
+for (const field of [feedbackMessage, feedbackEmail, feedbackLicense]) {
+  field.addEventListener("input", () => { feedbackConsent.checked = false; });
+  field.addEventListener("change", () => { feedbackConsent.checked = false; });
+}
 $("#feedbackSave").addEventListener("click", () => {
-  const blob = new Blob([$("#feedbackMessage").value, "\n\nReply email: ", $("#feedbackEmail").value], { type: "text/plain;charset=utf-8" });
+  const text = [
+    feedbackMessage.value,
+    `Reply email: ${feedbackEmail.value.trim() || "Not provided"}`,
+    "Client: web/0.1.5",
+    `Share license and installation IDs: ${feedbackLicense.checked ? "Yes" : "No"}`,
+  ].join("\n\n");
+  const blob = new Blob([text], { type: "text/plain;charset=utf-8" });
   const url = URL.createObjectURL(blob);
   const link = document.createElement("a"); link.href = url; link.download = "findout-feedback.txt"; link.click();
   setTimeout(() => URL.revokeObjectURL(url), 1000);
@@ -426,16 +445,21 @@ $("#feedbackSave").addEventListener("click", () => {
 $("#feedbackForm").addEventListener("submit", async event => {
   event.preventDefault();
   if ($("#feedbackSend").disabled) return;
+  if (!feedbackConsent.checked) {
+    $("#feedbackStatus").textContent = "Confirm the listed payload before sending.";
+    return;
+  }
   $("#feedbackSend").disabled = true;
-  for (const id of ["#feedbackMessage", "#feedbackEmail", "#feedbackLicense"]) $(id).disabled = true;
+  for (const id of ["#feedbackMessage", "#feedbackEmail", "#feedbackLicense", "#feedbackConsent"]) $(id).disabled = true;
   $("#feedbackStatus").textContent = "Sending…";
   try {
     await api("/api/feedback", { method: "POST", signal: AbortSignal.timeout(15000), body: JSON.stringify({
-      message: $("#feedbackMessage").value, email: $("#feedbackEmail").value.trim(),
-      include_license: $("#feedbackLicense").checked, client: "web/0.1.5",
+      message: feedbackMessage.value, email: feedbackEmail.value.trim(),
+      include_license: feedbackLicense.checked, client: "web/0.1.5", consent: true,
     }) });
-    $("#feedbackMessage").value = "";
+    feedbackMessage.value = "";
+    feedbackConsent.checked = false;
     $("#feedbackStatus").textContent = "Feedback sent. Thank you.";
   } catch (error) { $("#feedbackStatus").textContent = `${error.message}. Your text is kept here; you can also save it.`; }
-  finally { $("#feedbackSend").disabled = false; for (const id of ["#feedbackMessage", "#feedbackEmail", "#feedbackLicense"]) $(id).disabled = false; }
+  finally { $("#feedbackSend").disabled = false; for (const id of ["#feedbackMessage", "#feedbackEmail", "#feedbackLicense", "#feedbackConsent"]) $(id).disabled = false; }
 });

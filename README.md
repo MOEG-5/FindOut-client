@@ -16,6 +16,11 @@ When it asks for an activation key, simply enter:
 
 You'll receive free daily usage. The server reports your current allowance and reset time.
 
+Read the [FindOut privacy policy](PRIVACY.md) for the exact data sent to model,
+search, hosting, database, and support providers, how long it is kept, and how to
+clear or request deletion of it. The PWA also publishes this policy at
+`/privacy.html`; the desktop feedback window includes an in-app copy.
+
 No API keys or separate accounts are needed.
 
 ## What can it do?
@@ -78,6 +83,14 @@ Then open `http://127.0.0.1:4173`. Run its tests with `npm test`. Configure the
 Vercel project's Root Directory as `web`; there is no build command or output
 directory. The PWA does not access Supabase directly, so Supabase credentials and
 service-role capabilities remain confined to the existing backend.
+
+Run the quota-flow browser regression with `npm ci` followed by
+`CHROMIUM_PATH=/path/to/chromium npm run test:browser` from `web`.
+It uses headless Chromium and a local mock backend through the real PWA proxy;
+it does not contact production. It checks activation, exhaustion, changed limits
+after session restoration, and rate-limit responses without quota headers.
+Activation and restoration do not consume a query to discover quota: the UI
+shows no numeric allowance until a query supplies current server headers.
 
 Install a current stable Rust toolchain first. Linux additionally needs GTK 3,
 a Secret Service-compatible keychain, and an X11-capable environment; on Arch:
@@ -258,6 +271,21 @@ python3 scripts/package-macos.py --arch aarch64  # x86_64 on an Intel Mac
   because Win+Space is reserved for keyboard-layout switching.
 
 ## UI regression checks
+
+Verify desktop activation, quota exhaustion and restored activation with a real
+process restart against a local mock backend:
+
+```sh
+cargo build
+python3 tests/quota-desktop.py
+```
+
+This Linux test creates its own display, D-Bus session, temporary Secret Service
+keychain and app storage. It requires Xvfb, xfwm4, xdotool, gnome-keyring-daemon,
+ImageMagick and Tesseract. Screenshots and results go to `target/quota-desktop`.
+See [the verification record](docs/quota-verification-20260922/README.md) for
+coverage and OCR limitations.
+
 
 On Linux, run the scrolling check in a disposable display (requires Xvfb):
 

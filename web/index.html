@@ -30,6 +30,7 @@
 
       <aside id="settingsPanel" class="settings-panel" hidden>
         <button id="installButton" class="settings-row" type="button" hidden><span>Install FindOut</span><span aria-hidden="true">↗</span></button>
+        <a class="settings-row" href="/privacy.html"><span>Privacy policy</span><span aria-hidden="true">↗</span></a>
         <button id="clearHistoryButton" class="settings-row" type="button"><span>Clear recent history</span><span aria-hidden="true">×</span></button>
         <button id="signOutButton" class="settings-row" type="button"><span>Forget activation</span><span aria-hidden="true">↺</span></button>
       </aside>
@@ -92,7 +93,18 @@
         <label for="feedbackEmail">Email address (optional, if you’d like a reply)</label>
         <input id="feedbackEmail" type="email" maxlength="254" autocomplete="email" />
         <label class="feedback-license"><input id="feedbackLicense" type="checkbox" /> Include license and installation IDs for support</label>
-        <p>Sends your feedback, optional reply email and app version (0.1.5). Optional support IDs help us find your license. Your chats and images stay private.</p>
+        <div class="feedback-payload" aria-labelledby="feedbackPayloadTitle">
+          <strong id="feedbackPayloadTitle">Exactly what this submission sends</strong>
+          <ul>
+            <li>the feedback text above;</li>
+            <li>the reply email above, if entered;</li>
+            <li>app version <code>web/0.1.5</code>; and</li>
+            <li>license and installation IDs only if selected.</li>
+          </ul>
+          <p>No conversation, answer, image, clipboard contents, activation key, installation token, or diagnostics are attached. Text you paste into the feedback box is part of your message.</p>
+        </div>
+        <label class="feedback-license"><input id="feedbackConsent" type="checkbox" required /> I agree to send exactly the fields listed above for this submission.</label>
+        <p><a href="/privacy.html">Read the privacy policy</a>. Support reports are normally deleted within 90 days.</p>
         <p id="feedbackStatus" role="status"></p>
         <div class="feedback-actions"><button id="feedbackClose" type="button">Close</button><button id="feedbackSave" type="button">Save text</button><button id="feedbackSend" type="submit">Send</button></div>
       </form>

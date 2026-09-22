@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="theme-color" content="#100906" />
+    <meta name="color-scheme" content="dark" />
+    <link rel="icon" href="/icons/findout.svg" type="image/svg+xml" />
+    <link rel="stylesheet" href="/styles.css" />
+    <title>Privacy policy · FindOut</title>
+  </head>
+  <body>
+    <main class="privacy-shell">
+      <a class="back-link" href="/">← BACK TO FINDOUT</a>
+      <p class="eyebrow">FINDOUT</p>
+      <h1>Privacy policy</h1>
+      <p class="updated">Last updated: 22 September 2026</p>
+      <p>This policy covers the FindOut desktop app, progressive web app (PWA), backend, and feedback form. FindOut answers questions by sending them to external model and search services. Do not submit information that you do not want those services to process.</p>
+
+      <h2>What a question sends</h2>
+      <p>An ordinary request contains the question, up to four recent question and answer pairs needed for a follow-up, a short device context such as operating system and package manager when supplied by the desktop app, and one image if the user attaches one.</p>
+      <p>The backend sends that material to the configured model service. Production currently uses the DeepSeek API first and may use OpenRouter as a bounded fallback. If the model requests web search, its generated search query goes to Exa and the result excerpts go back to the model. Currency conversion sends only the amount and currency codes to Frankfurter.</p>
+      <p>FindOut does not use questions, answers, images, or search text for advertising. The application backend does not intentionally save that content after the request finishes or put it in application logs. Model, search, hosting, and network providers still process it in transit and apply their own rules.</p>
+      <ul>
+        <li><a href="https://api-docs.deepseek.com/api/deepseek-api/">DeepSeek API terms</a> and <a href="https://api-docs.deepseek.com/guides/kv_cache/">context-cache retention</a></li>
+        <li><a href="https://openrouter.ai/privacy/">OpenRouter privacy policy</a></li>
+        <li><a href="https://exa.ai/privacy-policy">Exa privacy policy</a></li>
+        <li><a href="https://vercel.com/legal/privacy-notice">Vercel privacy notice</a></li>
+        <li><a href="https://supabase.com/privacy">Supabase privacy policy</a></li>
+        <li><a href="https://frankfurter.dev/">Frankfurter</a></li>
+      </ul>
+      <p>FindOut does not currently use a commerce provider or collect payment details. This policy will be updated before payment processing is introduced.</p>
+      <p>DeepSeek documents automatic prompt-context caching that normally clears within hours to days. OpenRouter may route a fallback request to a selected model provider with different practices. Exa states that query data may be used to improve its products and technology. Provider terms can change; the links above are the controlling sources.</p>
+
+      <h2>Activation, usage, and hosting data</h2>
+      <p>The PWA stores its installation token in a Secure, HttpOnly, SameSite cookie. The desktop app uses the operating system keychain. Tokens expire after one year and can be removed earlier with <strong>Forget activation</strong> in the PWA or by uninstalling the desktop app. A pseudonymous trial device value stays on the device so the same trial can be restored. Raw machine identifiers are not sent or stored by FindOut.</p>
+      <p>The backend stores a shortened hash-derived license ID, license state, per-license UTC daily request counts, and shared provider-health state in Supabase. Deployments with the selected cost-quota release also store short-window rate state and aggregate daily service usage. Aggregate usage includes new and limited trial enrollments, admitted and limited requests, estimated cost, searches, images, fallbacks, failures, and incomplete requests. That release also creates opaque per-query reservation rows containing the shortened license ID and operational counts, but no user content. They are normally removed within 49 hours. Per-license daily counters keep the current and previous UTC day, and aggregate daily usage is kept for 35 days. Active license records and their rate state do not expire automatically; users can request deletion below.</p>
+      <p>Supabase does not receive the activation key, installation token, raw device value, question, answer, screenshot, search text, or conversation history from the quota system. These service records provide activation, enforce and tune free-service limits, investigate abuse, or meet legal obligations.</p>
+      <p>Vercel hosts the PWA and backend and processes network information such as IP address, route, time, status, and user agent. FindOut application logs contain operational fields such as timing, model route, fallback reason, provider attempt status, and tool counts. They omit license and reservation IDs, raw questions, answers, images, credentials, installation tokens, and model reasoning. Vercel's standard runtime-log window varies by plan from one hour to 30 days; its privacy notice may allow longer processing for security and legal needs.</p>
+
+      <h2>Data kept on the device</h2>
+      <p>The clients keep at most five recent conversation threads on the device. The PWA uses browser local storage; the desktop app uses a user-only local file. Image bytes and installation tokens are not written into conversation history. History remains until the user selects <strong>Clear recent history</strong>, clears browser site data, or uninstalls the desktop app. Clipboard copies and locally saved feedback files remain until the user deletes them.</p>
+      <p>FindOut does not add advertising cookies or third-party analytics. The PWA uses the activation cookie and a service-worker cache for public application files.</p>
+
+      <h2>Feedback and support</h2>
+      <p>Before every submission, the form lists the complete payload and requires confirmation. It sends only the feedback text, the optional reply email, the displayed app version, and the pseudonymous license and installation IDs when the user selects that option. It never automatically attaches a conversation, answer, image, clipboard contents, activation key, installation token, or diagnostics. Anything pasted into the feedback field is part of the message.</p>
+      <p>The backend sends that payload through AgentMail to the support address. It does not send it to a model or save a second copy. Support reports are deleted from the mailbox within 90 days. An active case may remain until 30 days after closure, up to 180 days total, unless a legal or security matter requires longer. AgentMail says deleted data may remain in point-in-time recovery for up to 35 days. Read the <a href="https://www.agentmail.to/legal/privacy">AgentMail privacy policy</a>.</p>
+      <p>If delivery fails, the draft stays in the open form. The PWA can save it as a local text file and the desktop app can copy it to the clipboard. Neither fallback sends data anywhere.</p>
+
+      <h2>Choices and deletion requests</h2>
+      <p>Users can clear local history, forget or uninstall activation, leave the reply email blank, decline to share support IDs, or keep a local draft instead of sending it.</p>
+      <p>To ask about this policy or request deletion of a support report, license record, or associated aggregate service records, email <a href="mailto:moeg-5@agentmail.to">moeg-5@agentmail.to</a>. Do not send an activation key or installation token. Include the reply email used for a report or opt in to sharing pseudonymous support IDs so the record can be located. Minimal information may be retained where required to address security abuse or a legal obligation.</p>
+      <p>Material changes will update the date at the top of this policy.</p>
+    </main>
+  </body>
+</html>

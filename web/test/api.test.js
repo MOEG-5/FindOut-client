@@ -13,15 +13,23 @@ function mockResponse() {
   };
 }
 
-async function withUpstream(callback, queryResponse = {}) {
+async function withUpstream(callback, queryResponse = {}, activationResponse = {}) {
   const seen = [];
   const server = createServer(async (request, response) => {
     let raw = "";
     for await (const chunk of request) raw += chunk;
     seen.push({ url: request.url, headers: request.headers, body: JSON.parse(raw) });
     response.setHeader("Content-Type", "application/json");
-    if (request.url === "/v1/activate") response.end(JSON.stringify({ device_token: "t".repeat(64) }));
-    else {
+    if (request.url === "/v1/activate") {
+      const {
+        status = 200,
+        headers = {},
+        body = { device_token: "t".repeat(64) },
+      } = activationResponse;
+      for (const [name, value] of Object.entries(headers)) response.setHeader(name, value);
+      response.statusCode = status;
+      response.end(JSON.stringify(body));
+    } else {
       const {
         status = 200,
         headers = {
@@ -58,6 +66,19 @@ test("activation hides the upstream bearer token in an HttpOnly cookie", async (
   assert.equal(seen[0].headers["x-findout-protocol"], "1");
 }));
 
+test("trial enrollment exhaustion preserves the authoritative retry interval", async () => withUpstream(async () => {
+  const response = mockResponse();
+  await activate({ method: "POST", body: { activation_key: "trial", device_id: "a".repeat(64) } }, response);
+  assert.equal(response.statusCode, 429);
+  assert.equal(response.headers["retry-after"], "731");
+  assert.deepEqual(response.body, { message: "Free trial signups are full for today; try again after midnight UTC" });
+  assert.equal(response.headers["set-cookie"], undefined);
+}, {}, {
+  status: 429,
+  headers: { "Retry-After": "731" },
+  body: { message: "Free trial signups are full for today; try again after midnight UTC" },
+}));
+
 test("query restores authorization and forwards server-provided usage headers", async () => withUpstream(async (seen) => {
   const response = mockResponse();
   await query({ method: "POST", cookies: { findout_session: "secret-token" }, body: { query: "Why?", previous_turns: [], force_search: false } }, response);
@@ -77,10 +98,12 @@ test("quota-exhaustion responses preserve authoritative headers without clearing
     limit: response.headers["x-findout-daily-limit"],
     remaining: response.headers["x-findout-daily-remaining"],
     reset: response.headers["x-findout-daily-reset"],
+    retryAfter: response.headers["retry-after"],
   }, {
     limit: "37",
     remaining: "0",
     reset: "2026-09-08T00:00:00.000Z",
+    retryAfter: "86400",
   });
   assert.equal(response.headers["set-cookie"], undefined);
 }, {
@@ -89,6 +112,7 @@ test("quota-exhaustion responses preserve authoritative headers without clearing
     "X-FindOut-Daily-Limit": "37",
     "X-FindOut-Daily-Remaining": "0",
     "X-FindOut-Daily-Reset": "2026-09-08T00:00:00.000Z",
+    "Retry-After": "86400",
   },
   body: { message: "Daily free limit reached; try again after midnight UTC" },
 }));
@@ -99,18 +123,19 @@ test("query requires an activation cookie", async () => {
   assert.equal(response.statusCode, 401);
 });
 
-test("feedback works without activation and forwards cookie only with consent", async () => withUpstream(async (seen) => {
+test("feedback works without activation, forwards payload consent, and shares the cookie only for IDs", async () => withUpstream(async (seen) => {
   const { default: feedback } = await import("../api/feedback.js");
-  for (const consent of [false, true]) {
+  for (const includeLicense of [false, true]) {
     const response = mockResponse();
-    await feedback({ method: "POST", headers: { "content-type": "application/json" }, cookies: { findout_session: "secret-token" }, body: { message: "Help", include_license: consent } }, response);
+    await feedback({ method: "POST", headers: { "content-type": "application/json" }, cookies: { findout_session: "secret-token" }, body: { message: "Help", include_license: includeLicense, consent: true } }, response);
     assert.equal(response.statusCode, 200);
     assert.equal(seen.at(-1).url, "/v1/feedback");
-    assert.equal(seen.at(-1).headers.authorization, consent ? "Bearer secret-token" : undefined);
+    assert.equal(seen.at(-1).headers.authorization, includeLicense ? "Bearer secret-token" : undefined);
+    assert.equal(seen.at(-1).body.consent, true);
     assert.equal(response.headers["set-cookie"], undefined);
   }
   const response = mockResponse();
-  await feedback({ method: "POST", headers: { "content-type": "application/json" }, cookies: {}, body: { message: "Cannot activate", include_license: true } }, response);
+  await feedback({ method: "POST", headers: { "content-type": "application/json" }, cookies: {}, body: { message: "Cannot activate", include_license: true, consent: true } }, response);
   assert.equal(response.statusCode, 200);
   assert.equal(seen.at(-1).headers.authorization, undefined);
 }));

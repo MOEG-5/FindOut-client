@@ -12,3 +12,5 @@ gen/
 
 # Historical local builds; deliberately not part of the release repository.
 /archive/
+
+node_modules/

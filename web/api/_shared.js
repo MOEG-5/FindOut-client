@@ -57,7 +57,7 @@ export function sessionToken(request) {
 }
 
 export function passUsageHeaders(upstreamResponse, response) {
-  for (const name of ["x-findout-daily-limit", "x-findout-daily-remaining", "x-findout-daily-reset"]) {
+  for (const name of ["x-findout-daily-limit", "x-findout-daily-remaining", "x-findout-daily-reset", "retry-after"]) {
     const value = upstreamResponse.headers.get(name);
     if (value) response.setHeader(name, value);
   }

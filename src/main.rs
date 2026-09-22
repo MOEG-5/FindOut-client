@@ -55,6 +55,7 @@ const POPUP_HEIGHT: i32 = 310;
 const FOCUS_LOSS_DEBOUNCE: Duration = Duration::from_millis(100);
 const HIDE_GRACE: Duration = Duration::from_secs(10);
 const UPDATE_CHECK_TIMEOUT: Duration = Duration::from_secs(5);
+const PRIVACY_POLICY: &str = include_str!("../PRIVACY.md");
 
 slint::slint! {
     export { FindOutWindow, RecentSession } from "monolith.slint";
@@ -63,15 +64,20 @@ slint::slint! {
     export component FeedbackWindow inherits Window {
         title: "FindOut feedback";
         width: 520px;
-        height: 470px;
+        height: 650px;
         in-out property <string> message;
         in-out property <string> email;
         in-out property <bool> include-license: false;
+        in-out property <bool> consent: false;
         in property <bool> busy: false;
         in property <string> status;
         callback send();
         callback copy-draft();
+        callback open-privacy();
         callback dismiss();
+        changed message => { root.consent = false; }
+        changed email => { root.consent = false; }
+        changed include-license => { root.consent = false; }
         VerticalLayout {
             padding: 20px;
             spacing: 10px;
@@ -80,13 +86,31 @@ slint::slint! {
             Text { text: "Email address (optional, if you’d like a reply)"; }
             LineEdit { text <=> root.email; enabled: !root.busy; }
             CheckBox { text: "Include license and installation IDs for support"; checked <=> root.include-license; enabled: !root.busy; }
-            Text { text: "Sends your feedback, optional reply email and app version (0.1.6). Optional support IDs help us find your license. Your chats and images stay private."; wrap: word-wrap; font-size: 12px; }
+            Text { text: "Exactly what this submission sends:\n• the feedback text above;\n• the reply email above, if entered;\n• app version desktop/0.1.6 and your operating system;\n• license and installation IDs only if selected.\n\nNo conversation, answer, image, clipboard contents, activation key, installation token, or diagnostics are attached. Text pasted above is part of your message."; wrap: word-wrap; font-size: 12px; }
+            CheckBox { text: "I agree to send exactly the fields listed above for this submission."; checked <=> root.consent; enabled: !root.busy; }
+            Text { text: "Support reports are normally deleted within 90 days."; wrap: word-wrap; font-size: 12px; }
             Text { text: root.status; wrap: word-wrap; font-size: 12px; }
             HorizontalLayout {
                 Button { text: "Close"; clicked => { root.dismiss(); } }
+                Button { text: "Privacy"; clicked => { root.open-privacy(); } }
                 Button { text: "Copy draft"; clicked => { root.copy-draft(); } }
-                Button { text: root.busy ? "Sending…" : "Send"; enabled: !root.busy && !root.message.is-empty; clicked => { root.send(); } }
+                Button { text: root.busy ? "Sending…" : "Send"; enabled: !root.busy && !root.message.is-empty && root.consent; clicked => { root.send(); } }
             }
+        }
+    }
+
+    export component PrivacyWindow inherits Window {
+        title: "FindOut privacy policy";
+        width: 640px;
+        height: 680px;
+        in property <string> policy-text;
+        callback dismiss();
+        VerticalLayout {
+            padding: 20px;
+            spacing: 12px;
+            Text { text: "FindOut privacy policy"; font-size: 20px; }
+            TextEdit { text: root.policy-text; read-only: true; wrap: word-wrap; }
+            Button { text: "Close"; clicked => { root.dismiss(); } }
         }
     }
 
@@ -2159,10 +2183,31 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     });
 
     let feedback = FeedbackWindow::new()?;
+    let privacy = PrivacyWindow::new()?;
+    privacy.set_policy_text(PRIVACY_POLICY.into());
+    privacy.on_dismiss({
+        let window = privacy.as_weak();
+        move || {
+            if let Some(w) = window.upgrade() {
+                let _ = w.hide();
+            }
+        }
+    });
+    feedback.on_open_privacy({
+        let window = privacy.as_weak();
+        move || {
+            if let Some(w) = window.upgrade() {
+                let _ = w.show();
+                w.window().with_winit_window(|native| native.focus_window());
+            }
+        }
+    });
     ui.on_open_feedback({
         let feedback = feedback.as_weak();
         move || {
             if let Some(window) = feedback.upgrade() {
+                window.set_consent(false);
+                window.set_status("".into());
                 let _ = window.show();
                 window.window().with_winit_window(|w| w.focus_window());
             }
@@ -2180,7 +2225,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let window = feedback.as_weak();
         move || {
             if let Some(w) = window.upgrade() {
-                let text = format!("{}\n\nReply email: {}", w.get_message(), w.get_email());
+                let text = format!(
+                    "{}\n\nReply email: {}\n\nClient: desktop/{} ({})\n\nShare license and installation IDs: {}",
+                    w.get_message(),
+                    if w.get_email().is_empty() { "Not provided".into() } else { w.get_email() },
+                    CURRENT_VERSION,
+                    std::env::consts::OS,
+                    if w.get_include_license() { "Yes" } else { "No" },
+                );
                 w.set_status(match write_clipboard_text(text) {
                     Ok(()) => "Draft copied. You can paste it into a local file.".into(),
                     Err(e) => e.into(),
@@ -2198,6 +2250,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let email = w.get_email().trim().to_owned();
             if message.is_empty() || message.chars().count() > 4000 { w.set_status("Write feedback up to 4,000 characters.".into()); return; }
             if email.len() > 254 || email.contains(['\r', '\n']) { w.set_status("Enter a valid email address.".into()); return; }
+            if !w.get_consent() { w.set_status("Confirm the listed payload before sending.".into()); return; }
             let include = w.get_include_license();
             w.set_busy(true);
             w.set_status("Sending…".into());
@@ -2207,13 +2260,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let mut request = agent().post(&format!("{origin}/v1/feedback")).timeout(Duration::from_secs(15)).set("X-FindOut-Protocol", PROTOCOL_VERSION);
                 if include { if let Ok(Some(t)) = token(&origin) { request = request.set("Authorization", &format!("Bearer {t}")); } }
                 let result: Result<HttpResponse<serde_json::Value>, RequestError> = post_json(request, &serde_json::json!({
-                    "message": message, "email": email, "include_license": include,
+                    "message": message, "email": email, "include_license": include, "consent": true,
                     "client": format!("desktop/{} ({})", CURRENT_VERSION, std::env::consts::OS),
                 }));
                 let _ = window.upgrade_in_event_loop(move |w| {
                     w.set_busy(false);
                     match result {
-                        Ok(_) => { w.set_message("".into()); w.set_status("Feedback sent. Thank you.".into()); }
+                        Ok(_) => { w.set_message("".into()); w.set_consent(false); w.set_status("Feedback sent. Thank you.".into()); }
                         Err(error) => w.set_status(format!("{} Your draft is kept here; Copy draft saves it to your clipboard.", quota_error(error)).into()),
                     }
                 });
