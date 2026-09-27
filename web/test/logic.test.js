@@ -23,6 +23,11 @@ test("query payload matches the desktop protocol", () => {
     force_search: true,
     system_context: "Android | mobile web app",
   });
+  for (const char of ["a", "😀"]) {
+    const query = char.repeat(50_000);
+    assert.equal(makeQueryPayload({ query }).query, query);
+    assert.throws(() => makeQueryPayload({ query: query + char }), /up to 50,000 characters/);
+  }
 });
 
 test("trial device identifier is 64 lowercase hex characters", () => {
@@ -32,10 +37,12 @@ test("trial device identifier is 64 lowercase hex characters", () => {
 
 test("recent threads retain full answers and per-answer sources while request context stays bounded", async () => {
   const { updateThread, normalizeThreads, threadText } = await import("../logic.js");
-  const turns = Array.from({ length: 8 }, (_, i) => ({ query: `q${i}`, answer: "ä".repeat(3000), searched: i === 1, hadImage: i === 2 }));
+  const longQuery = "😀".repeat(50_000);
+  const turns = Array.from({ length: 8 }, (_, i) => ({ query: i === 0 ? longQuery : `q${i}`, answer: "ä".repeat(3000), searched: i === 1, hadImage: i === 2 }));
   let threads = updateThread([], "one", turns);
   assert.equal(threads[0].turns.length, 8);
   assert.equal(threads[0].turns[0].answer.length, 3000);
+  assert.equal(normalizeThreads(JSON.parse(JSON.stringify(threads)))[0].turns[0].query, longQuery);
   assert.match(threadText(threads[0].turns), /🌐/); assert.match(threadText(threads[0].turns), /📷/);
   assert.equal(previousTurns(threads[0].turns).length, 4);
   assert.equal(previousTurns(threads[0].turns)[0].answer.length, 2000);

@@ -5,6 +5,7 @@ export const INSTALL_HINT_KEY = "findout.install-hint.v1";
 export const MAX_HISTORY = 5;
 export const MAX_PREVIOUS_TURNS = 4;
 export const MAX_TURN_CHARS = 2000;
+export const MAX_QUERY_CHARS = 50_000;
 
 export function clipText(value, limit = MAX_TURN_CHARS) {
   return Array.from(String(value ?? "")).slice(0, limit).join("");
@@ -35,7 +36,7 @@ export function previousTurns(history) {
 
 export function makeQueryPayload({ query, history, forceSearch = false, image = null, systemContext = null }) {
   const cleanQuery = String(query ?? "").trim();
-  if (!cleanQuery || Array.from(cleanQuery).length > 4000) throw new Error("Enter a question up to 4,000 characters");
+  if (!cleanQuery || Array.from(cleanQuery).length > MAX_QUERY_CHARS) throw new Error("Enter a question up to 50,000 characters");
   return {
     query: cleanQuery,
     previous_turns: previousTurns(history),
@@ -57,7 +58,7 @@ export function normalizeThreads(value) {
   if (!Array.isArray(value)) return [];
   return value.filter(t => t && typeof t.id === "string" && Array.isArray(t.turns))
     .map(t => ({ id: t.id.slice(0, 100), turns: t.turns.filter(turn => turn && typeof turn.query === "string" && typeof turn.answer === "string").slice(0, MAX_THREAD_TURNS).map(turn => ({
-      query: clipText(turn.query, 4000), answer: clipText(turn.answer, 128 * 1024),
+      query: clipText(turn.query, MAX_QUERY_CHARS), answer: clipText(turn.answer, 128 * 1024),
       searched: turn.searched === true, hadImage: turn.hadImage === true,
       timestamp: Number.isFinite(turn.timestamp) ? turn.timestamp : 0,
     })) })).filter(t => t.turns.length).slice(-MAX_HISTORY);

@@ -1,4 +1,4 @@
-const CACHE = "findout-shell-v0.1.5-5";
+const CACHE = "findout-shell-v0.1.5-6";
 const SHELL = ["/", "/index.html", "/privacy.html", "/styles.css", "/app.js", "/logic.js", "/quota.js", "/manifest.webmanifest", "/icons/findout.svg", "/icons/findout-192.png", "/icons/findout-512.png", "/icons/findout-maskable-512.png", "/icons/apple-touch-icon.png"];
 
 self.addEventListener("install", (event) => {

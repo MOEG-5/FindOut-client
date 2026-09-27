@@ -36,7 +36,7 @@ const KEYRING_SERVICE: &str = "app.findout.client";
 const TOKEN_KEYRING_USER: &str = "installation";
 const TRIAL_DEVICE_KEYRING_USER: &str = "trial-device-v1";
 const TRIAL_DEVICE_MESSAGE: &[u8] = b"findout/trial/device/v1";
-const MAX_QUERY_CHARS: usize = 4_000;
+const MAX_QUERY_CHARS: usize = 50_000;
 const MAX_PREVIOUS_TURNS: usize = 4;
 const MAX_TURN_CHARS: usize = 2_000;
 const MAX_THREAD_TURNS: usize = 100;
@@ -2958,8 +2958,10 @@ mod tests {
         assert!(validate_activation_key("short").is_err());
         assert!(validate_activation_key(" activation-key ").is_ok());
         assert!(validate_query("  ").is_err());
-        assert!(validate_query(&"a".repeat(MAX_QUERY_CHARS)).is_ok());
-        assert!(validate_query(&"a".repeat(MAX_QUERY_CHARS + 1)).is_err());
+        assert!(validate_query(&"a".repeat(50_000)).is_ok());
+        assert!(validate_query(&"a".repeat(50_001)).is_err());
+        assert!(validate_query(&"😀".repeat(50_000)).is_ok());
+        assert!(validate_query(&"😀".repeat(50_001)).is_err());
         assert!(validate_image_dimensions(16_385, 1).is_err());
         assert!(validate_image_dimensions(10_000, 10_000).is_err());
     }

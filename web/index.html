@@ -63,7 +63,8 @@
             <button id="removeImageButton" class="icon-button small" type="button" aria-label="Remove attached image">×</button>
           </div>
           <label class="sr-only" for="queryInput">Question</label>
-          <textarea id="queryInput" rows="1" maxlength="4000" placeholder="What do you want to know?" required></textarea>
+          <!-- Query length is validated in logic.js using Unicode characters, not UTF-16 units. -->
+          <textarea id="queryInput" rows="1" placeholder="What do you want to know?" required></textarea>
           <div class="composer-bar">
             <div class="composer-options">
               <button id="attachButton" class="attach-button" type="button" aria-label="Attach an image"><span aria-hidden="true">＋</span><span>IMAGE</span></button>

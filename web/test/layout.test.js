@@ -25,7 +25,7 @@ test("activation button is the final visible element in its view", () => {
 });
 
 test("offline shell includes quota and privacy resources", () => {
-  assert.match(serviceWorker, /findout-shell-v0\.1\.5-5/);
+  assert.match(serviceWorker, /findout-shell-v0\.1\.5-6/);
   assert.match(serviceWorker, /"\/quota\.js"/);
   assert.match(serviceWorker, /"\/privacy\.html"/);
   assert.match(html, /id="feedbackConsent"[^>]*required/);
