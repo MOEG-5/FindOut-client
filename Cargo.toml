@@ -1,6 +1,6 @@
 [package]
 name = "findout-client"
-version = "0.1.7"
+version = "0.1.8"
 edition = "2021"
 license = "GPL-3.0-only"
 description = "Minimal native desktop client for FindOut"
@@ -11,7 +11,8 @@ dev-metrics = []
 local-trial = []
 
 [dependencies]
-slint = { version = "1.17", default-features = false, features = [
+# Keep Slint compatible with the local software-renderer coordinate fix.
+slint = { version = "=1.17.1", default-features = false, features = [
     "std",
     "renderer-software",
     "accessibility",
@@ -57,3 +58,7 @@ lto = true
 codegen-units = 1
 panic = "abort"
 strip = "symbols"
+
+[patch.crates-io]
+i-slint-renderer-software = { path = "vendor/i-slint-renderer-software" }
+parley = { path = "vendor/parley" }

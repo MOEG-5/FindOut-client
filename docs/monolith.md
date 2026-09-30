@@ -99,7 +99,7 @@ cargo test --locked
 dbus-run-session --config-file=tests/dbus-session.conf -- xvfb-run -a \
   env -u WAYLAND_DISPLAY -u XDG_RUNTIME_DIR SLINT_SCALE_FACTOR=1 \
   cargo test --locked monolith_ui -- --ignored
-# Repeat the last command with scrolling_ui, clipboard_copy, or clipboard_paste_ui instead.
+# Repeat with scrolling_ui, clipboard_copy, clipboard_paste_ui, or long_text_paste_ui.
 ```
 
 Set `FINDOUT_UI_DARK=1` and a separate `FINDOUT_UI_CAPTURE_DIR` to capture
@@ -113,3 +113,13 @@ The scrolling test checks long input, answer selection, wheel scrolling and
 PageDown. The clipboard test reads the copied Unicode text from a separate X11
 process. GUI checks use a private D-Bus session with service activation disabled;
 they do not access the desktop keychain or backend.
+
+The long-text paste test uses the real X11 clipboard and software renderer. It
+checks a transcript and ASCII/Unicode questions at the 50,000-character limit,
+including Home/End navigation, selection, replacement, undo, and submission.
+Set `FINDOUT_PASTE_FIXTURE=/absolute/path/to/file.txt` to use a particular
+transcript. Release CI runs this regression at scale factors 1 and 2.
+
+The software renderer has a local coordinate fix described in
+[`vendor/README.md`](../vendor/README.md). Keep that patch when upgrading Slint
+until both long text and selection pass this test.

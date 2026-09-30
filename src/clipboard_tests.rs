@@ -179,3 +179,144 @@ fn clipboard_paste_ui() {
     assert_eq!(ui.get_question(), "/tmp/ordinary-path.png");
     ui.hide().unwrap();
 }
+
+// Run in a separate process on a disposable display, like clipboard_paste_ui.
+#[test]
+#[ignore = "requires an isolated X11 display and xclip"]
+fn long_text_paste_ui() {
+    use slint::platform::{Key, WindowEvent};
+    use std::io::Write as _;
+    use std::process::Stdio;
+    use winit::platform::x11::EventLoopBuilderExtX11;
+
+    let mut event_loop =
+        winit::event_loop::EventLoop::<slint::winit_030::SlintEvent>::with_user_event();
+    event_loop.with_x11().with_any_thread(true);
+    slint::BackendSelector::new()
+        .backend_name("winit-software".into())
+        .with_winit_event_loop_builder(event_loop)
+        .select()
+        .unwrap();
+    gtk::init().unwrap();
+    let ui = FindOutWindow::new().unwrap();
+    let attached = Arc::new(Mutex::new(None));
+    ui.on_paste_image({
+        let ui = ui.as_weak();
+        move || paste_clipboard_image(&ui.unwrap(), &attached)
+    });
+    ui.set_activated(true);
+    ui.set_motion(false);
+    ui.show().unwrap();
+    ui.invoke_focus_input();
+    let key = |text: slint::SharedString| {
+        ui.window()
+            .dispatch_event(WindowEvent::KeyPressed { text: text.clone() });
+        ui.window()
+            .dispatch_event(WindowEvent::KeyReleased { text });
+    };
+    let text = std::env::var_os("FINDOUT_PASTE_FIXTURE")
+        .map(|path| std::fs::read_to_string(path).unwrap())
+        .unwrap_or_else(|| {
+            let mut text =
+                "Title: A long video transcript\nURL: https://example.com/video\n\n".to_string();
+            for n in 0..286 {
+                text.push_str(&format!(
+                    "({}:{:02}) A transcript line with Unicode ä € 🦀 and words.\n",
+                    n / 60,
+                    n % 60
+                ));
+            }
+            text
+        });
+    let shortcut = |letter: &str| {
+        ui.window().dispatch_event(WindowEvent::KeyPressed {
+            text: Key::Control.into(),
+        });
+        key(letter.into());
+        ui.window().dispatch_event(WindowEvent::KeyReleased {
+            text: Key::Control.into(),
+        });
+    };
+    let submitted = std::rc::Rc::new(std::cell::RefCell::new(String::new()));
+    ui.on_submit({
+        let submitted = submitted.clone();
+        let ui = ui.as_weak();
+        move |text, _| {
+            *submitted.borrow_mut() = text.to_string();
+            present_answer(&ui.unwrap(), &text, "Synthetic answer", false, false);
+        }
+    });
+    for (case, text) in [
+        text,
+        format!("START {} FINISH", "W".repeat(MAX_QUERY_CHARS - 17)),
+        format!("START {} FINISH", "ä".repeat(MAX_QUERY_CHARS - 17)),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        eprintln!("Checking {} pasted characters", text.chars().count());
+        let expected = text.replace('\n', " ");
+        let mut owner = Command::new("xclip")
+            .args(["-selection", "clipboard", "-in"])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap();
+        owner
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(text.as_bytes())
+            .unwrap();
+        assert!(owner.wait().unwrap().success());
+        shortcut("a");
+        shortcut("v");
+        assert_eq!(ui.get_question(), expected);
+        // Rendering catches coordinate overflows that assigning text alone misses.
+        let end = ui.window().take_snapshot().unwrap();
+        key(Key::Home.into());
+        let start = ui.window().take_snapshot().unwrap();
+        if let Ok(directory) = std::env::var("FINDOUT_UI_CAPTURE_DIR") {
+            std::fs::create_dir_all(&directory).unwrap();
+            for (name, snapshot) in [("end", &end), ("start", &start)] {
+                image::save_buffer(
+                    format!("{directory}/paste-{case}-{name}.png"),
+                    snapshot.as_bytes(),
+                    snapshot.width(),
+                    snapshot.height(),
+                    image::ColorType::Rgba8,
+                )
+                .unwrap();
+            }
+        }
+        assert!(
+            start.as_bytes() != end.as_bytes(),
+            "Home must reveal the start"
+        );
+        key(Key::End.into());
+        assert!(
+            ui.window().take_snapshot().unwrap().as_bytes() == end.as_bytes(),
+            "End must return to the end of the line"
+        );
+        key(" END".into());
+        let edited = format!("{expected} END");
+        assert_eq!(ui.get_question(), edited);
+        assert!(validate_query(&edited).is_ok());
+        ui.window().take_snapshot().unwrap();
+        // Select the entire long line, then edit and undo without losing text.
+        shortcut("a");
+        ui.window().take_snapshot().unwrap();
+        key("replacement".into());
+        assert_eq!(ui.get_question(), "replacement");
+        // Slint records the replacement's insertion and deletion separately.
+        shortcut("z");
+        shortcut("z");
+        assert_eq!(ui.get_question(), edited);
+        ui.window().take_snapshot().unwrap();
+        key(Key::Return.into());
+        assert_eq!(*submitted.borrow(), edited);
+        ui.window().take_snapshot().unwrap();
+    }
+    ui.hide().unwrap();
+}

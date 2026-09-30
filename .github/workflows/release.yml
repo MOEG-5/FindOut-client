@@ -42,7 +42,7 @@ jobs:
 
       - name: Install Linux build dependencies
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install --no-install-recommends -y libgtk-3-dev
+        run: sudo apt-get update && sudo apt-get install --no-install-recommends -y libgtk-3-dev dbus xvfb xauth xclip
 
       - name: Check release configuration
         shell: bash
@@ -55,6 +55,16 @@ jobs:
 
       - name: Test
         run: cargo test --locked
+
+      - name: Test long clipboard text on Linux
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          for scale in 1 2; do
+            dbus-run-session --config-file=tests/dbus-session.conf -- xvfb-run -a \
+              env -u WAYLAND_DISPLAY -u XDG_RUNTIME_DIR SLINT_SCALE_FACTOR="$scale" \
+              cargo test --locked long_text_paste_ui -- --ignored
+          done
 
       - name: Check optional features
         run: cargo check --locked --all-features
