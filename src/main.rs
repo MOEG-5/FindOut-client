@@ -86,7 +86,7 @@ slint::slint! {
             Text { text: "Email address (optional, if you’d like a reply)"; }
             LineEdit { text <=> root.email; enabled: !root.busy; }
             CheckBox { text: "Include license and installation IDs for support"; checked <=> root.include-license; enabled: !root.busy; }
-            Text { text: "Exactly what this submission sends:\n• the feedback text above;\n• the reply email above, if entered;\n• app version desktop/0.1.8 and your operating system;\n• license and installation IDs only if selected.\n\nNo conversation, answer, image, clipboard contents, activation key, installation token, or diagnostics are attached. Text pasted above is part of your message."; wrap: word-wrap; font-size: 12px; }
+            Text { text: "Exactly what this submission sends:\n• the feedback text above;\n• the reply email above, if entered;\n• app version desktop/0.1.9 and your operating system;\n• license and installation IDs only if selected.\n\nNo conversation, answer, image, clipboard contents, activation key, installation token, or diagnostics are attached. Text pasted above is part of your message."; wrap: word-wrap; font-size: 12px; }
             CheckBox { text: "I agree to send exactly the fields listed above for this submission."; checked <=> root.consent; enabled: !root.busy; }
             Text { text: "Support reports are normally deleted within 90 days."; wrap: word-wrap; font-size: 12px; }
             Text { text: root.status; wrap: word-wrap; font-size: 12px; }

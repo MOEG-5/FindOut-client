@@ -23,8 +23,8 @@ jobs:
             arch: x86_64
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-python@v6
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
       - name: Download and package the published app
@@ -39,7 +39,7 @@ jobs:
           ditto -x -k "downloaded/findout-client-macos-${MAC_ARCH}.zip" extracted
           lipo extracted/FindOut.app/Contents/MacOS/findout-client -verify_arch "${MAC_ARCH/aarch64/arm64}"
           python3 scripts/package-macos.py --app extracted/FindOut.app --expected-version "${RELEASE_TAG#v}" --arch "$MAC_ARCH" --smoke-test
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: findout-client-macos-${{ matrix.arch }}-dmg
           path: dist/*.dmg
