@@ -6,6 +6,10 @@ Press a shortcut (Windows: Alt+Space, Linux: Super+Space, macOS: Option+Space), 
 
 It runs on **Windows, Linux, and macOS** and is designed to stay lightweight, fast, and out of the way.
 
+Visit [the FindOut website](https://moeg-5.github.io/FindOut-client/) for downloads
+and the web app. The static site's source is in [`site/`](site/); see
+[`docs/website.md`](docs/website.md) for preview and publishing instructions.
+
 ## Try it for free
 
 Download the latest version from **Releases** and launch FindOut.
