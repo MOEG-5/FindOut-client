@@ -9,6 +9,7 @@ import {
   randomDeviceId,
 } from "./logic.js";
 import { quotaExhaustionStatus, quotaStatus } from "./quota.js";
+import { watchFocusLoss } from "./focus.js";
 
 const $ = (selector) => document.querySelector(selector);
 const elements = {
@@ -33,6 +34,7 @@ let attachedPreviewUrl = null;
 let lastRequest = null;
 let lastAnswer = null;
 let deferredInstallPrompt = null;
+let activeRequest = null;
 
 class ApiError extends Error {
   constructor(message, status, headers) {
@@ -60,16 +62,25 @@ function saveHistory() {
   renderHistory();
 }
 
-function newConversation() {
+function newConversation(focusInput = true) {
+  activeRequest?.abort();
+  activeRequest = null;
+  setBusy(false);
   activeThreadId = crypto.randomUUID();
   history = [];
   lastRequest = null;
   restoreLatestAnswer();
   elements.queryInput.value = "";
+  elements.forceSearchInput.checked = false;
+  elements.queryStatus.textContent = "";
+  resizeComposer();
   clearImage();
-  elements.queryInput.focus();
+  if (focusInput) elements.queryInput.focus();
 }
-$("#newConversationButton").addEventListener("click", newConversation);
+$("#newConversationButton").addEventListener("click", () => newConversation());
+watchFocusLoss(() => {
+  if (!elements.mainView.hidden) newConversation(false);
+});
 
 function setActivated(value) {
   localStorage.setItem(ACTIVATED_KEY, value ? "true" : "false");
@@ -87,7 +98,7 @@ function restoreLatestAnswer() {
     lastAnswer = null;
     elements.answerView.classList.add("is-waiting");
     elements.answerSource.textContent = "READY";
-    elements.answerText.textContent = "Your answer will appear here.";
+    setAnswerText("Your answer will appear here.");
     elements.copyButton.hidden = true;
     elements.answerActions.hidden = true;
     elements.searchWebButton.hidden = true;
@@ -97,7 +108,7 @@ function restoreLatestAnswer() {
   lastAnswer = latest.answer;
   elements.answerView.classList.remove("is-waiting");
   elements.answerSource.textContent = `${answerIndicators(latest)} ${latest.searched ? "FROM THE WEB" : "FROM KNOWLEDGE"}`.trim();
-  elements.answerText.textContent = latest.answer;
+  setAnswerText(latest.answer);
   elements.copyButton.hidden = false;
   elements.answerActions.hidden = true;
   elements.searchWebButton.hidden = true;
@@ -172,6 +183,9 @@ elements.queryForm.addEventListener("submit", async (event) => {
 });
 
 async function ask({ query, forceSearch, image, retry = false }) {
+  if (activeRequest) return;
+  const request = new AbortController();
+  activeRequest = request;
   elements.queryStatus.textContent = "";
   setBusy(true);
   try {
@@ -179,7 +193,8 @@ async function ask({ query, forceSearch, image, retry = false }) {
     const payload = retry
       ? { ...lastRequest, force_search: true }
       : makeQueryPayload({ query, history, forceSearch, image, systemContext: mobileContext() });
-    const { body, headers } = await api("/api/query", { method: "POST", body: JSON.stringify(payload) });
+    const { body, headers } = await api("/api/query", { method: "POST", body: JSON.stringify(payload), signal: request.signal });
+    if (activeRequest !== request) return;
     if (typeof body.answer !== "string" || typeof body.searched !== "boolean") throw new Error("FindOut returned an invalid answer");
     if (retry && history.length) history = history.slice(0, -1);
     history = [...history, { query: payload.query, answer: body.answer, searched: body.searched, hadImage: Boolean(payload.image), timestamp: Date.now() }];
@@ -192,23 +207,34 @@ async function ask({ query, forceSearch, image, retry = false }) {
     resizeComposer();
     clearImage();
   } catch (error) {
+    if (activeRequest !== request) return;
     if (error instanceof ApiError) elements.allowance.textContent = quotaStatus(error.headers);
     const quotaStatusText = error instanceof ApiError && error.status === 429
       ? quotaExhaustionStatus(error.headers)
       : "";
     elements.queryStatus.textContent = quotaStatusText || error.message;
-  } finally { setBusy(false); }
+  } finally {
+    if (activeRequest === request) {
+      activeRequest = null;
+      setBusy(false);
+    }
+  }
+}
+
+function setAnswerText(answer) {
+  elements.answerText.textContent = answer;
+  elements.answerText.classList.toggle("is-short", Array.from(answer).length <= 18 && !answer.includes("\n"));
 }
 
 function showAnswer(answer, searched, headers = null, hadImage = false) {
   elements.answerView.classList.remove("is-waiting");
-  elements.answerText.textContent = answer;
+  setAnswerText(answer);
   elements.answerSource.textContent = `${answerIndicators({ searched, hadImage })} ${searched ? "FROM THE WEB" : "FROM KNOWLEDGE"}`.trim();
   elements.copyButton.hidden = false;
   elements.answerActions.hidden = false;
   elements.searchWebButton.hidden = searched;
   elements.allowance.textContent = quotaStatus(headers);
-  elements.answerView.scrollIntoView({ behavior: "smooth", block: "start" });
+  elements.answerView.scrollIntoView({ behavior: matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth", block: "start" });
 }
 
 function renderHistory() {
@@ -263,9 +289,12 @@ elements.attachButton.addEventListener("click", () => elements.imageInput.click(
 elements.imageInput.addEventListener("change", async () => {
   const file = elements.imageInput.files?.[0];
   if (!file) return;
+  const threadId = activeThreadId;
   elements.queryStatus.textContent = "Preparing image…";
   try {
-    attachedImage = await normalizeImage(file);
+    const image = await normalizeImage(file);
+    if (threadId !== activeThreadId) return;
+    attachedImage = image;
     if (attachedPreviewUrl) URL.revokeObjectURL(attachedPreviewUrl);
     attachedPreviewUrl = URL.createObjectURL(file);
     elements.imageThumb.src = attachedPreviewUrl;
@@ -273,6 +302,7 @@ elements.imageInput.addEventListener("change", async () => {
     elements.imagePreview.hidden = false;
     elements.queryStatus.textContent = "";
   } catch (error) {
+    if (threadId !== activeThreadId) return;
     elements.queryStatus.textContent = error.message;
     clearImage();
   }

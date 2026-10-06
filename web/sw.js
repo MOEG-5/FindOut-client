@@ -1,5 +1,5 @@
-const CACHE = "findout-shell-v0.1.5-6";
-const SHELL = ["/", "/index.html", "/privacy.html", "/styles.css", "/app.js", "/logic.js", "/quota.js", "/manifest.webmanifest", "/icons/findout.svg", "/icons/findout-192.png", "/icons/findout-512.png", "/icons/findout-maskable-512.png", "/icons/apple-touch-icon.png"];
+const CACHE = "findout-shell-v0.1.5-7";
+const SHELL = ["/", "/index.html", "/privacy.html", "/styles.css", "/theme.js", "/focus.js", "/app.js", "/logic.js", "/quota.js", "/fonts/Inter.woff2", "/fonts/Anton.woff2", "/fonts/JetBrainsMono.woff2", "/manifest.webmanifest", "/icons/findout.svg", "/icons/findout-192.png", "/icons/findout-512.png", "/icons/findout-maskable-512.png", "/icons/apple-touch-icon.png"];
 
 self.addEventListener("install", (event) => {
   event.waitUntil(caches.open(CACHE).then((cache) => cache.addAll(SHELL)).then(() => self.skipWaiting()));

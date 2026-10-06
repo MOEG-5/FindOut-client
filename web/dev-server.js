@@ -9,7 +9,7 @@ import logout from "./api/logout.js";
 const root = new URL(".", import.meta.url).pathname;
 process.env.NODE_ENV ||= "development";
 const handlers = { "/api/feedback": feedback, "/api/activate": activate, "/api/query": query, "/api/logout": logout };
-const types = { ".html": "text/html", ".js": "text/javascript", ".css": "text/css", ".svg": "image/svg+xml", ".webmanifest": "application/manifest+json" };
+const types = { ".html": "text/html", ".js": "text/javascript", ".css": "text/css", ".svg": "image/svg+xml", ".woff2": "font/woff2", ".webmanifest": "application/manifest+json" };
 
 createServer(async (request, response) => {
   const url = new URL(request.url, "http://localhost");

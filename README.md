@@ -88,6 +88,15 @@ Vercel project's Root Directory as `web`; there is no build command or output
 directory. The PWA does not access Supabase directly, so Supabase credentials and
 service-role capabilities remain confined to the existing backend.
 
+The PWA uses the desktop Monolith theme, starting in light mode. Toggle
+**Light theme** in Settings for the dark variant; the choice is saved on the
+device and also applies to the privacy page. Recent conversations stay below
+the composer with expandable transcripts and **Continue thread**. Switching
+away or losing browser focus for ten seconds starts a fresh conversation;
+returning sooner preserves the current question and thread. Completed
+conversations remain in Recent. An unfinished request is canceled when the
+grace period expires, so a late response cannot appear in the new thread.
+
 Run the quota-flow browser regression with `npm ci` followed by
 `CHROMIUM_PATH=/path/to/chromium npm run test:browser` from `web`.
 It uses headless Chromium and a local mock backend through the real PWA proxy;
