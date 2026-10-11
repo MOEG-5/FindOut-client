@@ -9,7 +9,7 @@ import {
   randomDeviceId,
 } from "./logic.js";
 import { quotaExhaustionStatus, quotaStatus } from "./quota.js";
-import { watchFocusLoss } from "./focus.js";
+import { consumeExpiredAway, watchFocusLoss } from "./focus.js";
 
 const $ = (selector) => document.querySelector(selector);
 const elements = {
@@ -27,8 +27,17 @@ const elements = {
 };
 
 let threads = loadThreads();
-let activeThreadId = threads.at(-1)?.id || crypto.randomUUID();
-let history = threads.at(-1)?.turns || [];
+// A reload or OS discard after a long absence must still start a new
+// conversation instead of resuming the previous thread. Completed threads
+// stay in Recent; only the active context is dropped.
+let startFresh = false;
+try {
+  startFresh = consumeExpiredAway({ storage: localStorage });
+} catch {
+  startFresh = false;
+}
+let activeThreadId = (!startFresh && threads.at(-1)?.id) || crypto.randomUUID();
+let history = (!startFresh && threads.at(-1)?.turns) || [];
 let attachedImage = null;
 let attachedPreviewUrl = null;
 let lastRequest = null;
