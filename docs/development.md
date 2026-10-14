@@ -1,0 +1,309 @@
+# Developing FindOut
+
+FindOut's desktop client is a small native Slint application for Linux, Windows,
+and macOS. Provider keys, model selection, search, trial limits, and other service
+logic live on the FindOut server. The client keeps its installation token in the OS
+keychain and recent conversation text in its local application-data directory.
+An installable mobile web client (PWA) lives in [`web/`](../web/), and the static
+website in [`site/`](../site/) (see [website.md](website.md)).
+
+Releases since v0.1.6 use the Monolith UI; see [monolith.md](monolith.md). The
+previous desktop UI remains available in the
+[v0.1.5 tag](https://github.com/MOEG-5/FindOut-client/tree/v0.1.5).
+
+## Mobile PWA
+
+The PWA is a dependency-free static client with four small Vercel Functions.
+Those functions proxy the existing `/v1/activate` and `/v1/query` contract so the
+backend needs no CORS changes. Feedback is proxied to `/v1/feedback`, including
+the cookie only when the user opts to share support IDs. Activation functions move the returned installation token into a
+Secure, HttpOnly cookie rather than exposing it to browser JavaScript.
+
+The checked-in Vercel configuration targets `https://findout-backend.vercel.app`.
+Override `FINDOUT_API_ORIGIN` in the PWA's Vercel project when deploying against a
+different backend. For local development:
+
+```sh
+cd web
+FINDOUT_API_ORIGIN=http://127.0.0.1:8787 npm run dev
+```
+
+Then open `http://127.0.0.1:4173`. Run its tests with `npm test`. Configure the
+Vercel project's Root Directory as `web`; there is no build command or output
+directory. The PWA does not access Supabase directly, so Supabase credentials and
+service-role capabilities remain confined to the existing backend.
+
+The PWA uses the desktop Monolith theme, starting in light mode. Toggle
+**Light theme** in Settings for the dark variant; the choice is saved on the
+device and also applies to the privacy page. Recent conversations stay below
+the composer with expandable transcripts and **Continue thread**. Switching
+away or losing browser focus for ten seconds starts a fresh conversation;
+returning sooner preserves the current question and thread. Completed
+conversations remain in Recent. An unfinished request is canceled when the
+grace period expires, so a late response cannot appear in the new thread.
+
+Run the quota-flow browser regression with `npm ci` followed by
+`CHROMIUM_PATH=/path/to/chromium npm run test:browser` from `web`.
+It uses headless Chromium and a local mock backend through the real PWA proxy;
+it does not contact production. It checks activation, exhaustion, changed limits
+after session restoration, and rate-limit responses without quota headers.
+Activation and restoration do not consume a query to discover quota: the UI
+shows no numeric allowance until a query supplies current server headers.
+
+## Building the desktop client
+
+Install a current stable Rust toolchain first. Linux additionally needs GTK 3,
+a Secret Service-compatible keychain, and an X11-capable environment; on Arch:
+
+```sh
+sudo pacman -S gtk3 libsecret
+```
+
+macOS developers also need Xcode Command Line Tools (`xcode-select --install`).
+
+Run it from the repository root:
+
+```sh
+cargo run
+```
+
+Development defaults to `http://127.0.0.1:8787`. Release builds must use an
+HTTPS API origin:
+
+```sh
+# Linux/macOS
+FINDOUT_API_ORIGIN=https://api.example.com cargo build --release
+
+# Windows PowerShell
+$env:FINDOUT_API_ORIGIN="https://api.example.com"; cargo build --release
+```
+
+For opt-in local latency logging, build the separate development variant:
+
+```sh
+FINDOUT_API_ORIGIN=https://findout-backend-staging.vercel.app \
+  cargo build --release --features dev-metrics
+```
+
+It shows the last end-to-end round-trip time in the answer footer and appends
+one CSV row per query to `$XDG_STATE_HOME/findout/dev-metrics.csv` (normally
+`~/.local/state/findout/dev-metrics.csv`). Windows uses
+`%LOCALAPPDATA%\\FindOut\\dev-metrics.csv`; macOS uses
+`~/Library/Application Support/FindOut/dev-metrics.csv`. Columns are timestamp, round-trip
+milliseconds, outcome, and search/force-search/image flags. The file never
+contains questions, answers, images, activation keys, device identifiers, or
+tokens. Normal builds neither show nor write metrics.
+
+## Updates and releases
+
+Published builds offer a per-user installation on first launch. “Start FindOut
+when I sign in” is selected by default and can be unchecked before installing,
+or changed later in the tray menu. “Not now” keeps the downloaded copy portable;
+the tray menu lets you install later. Development builds do not prompt.
+
+Installed builds check GitHub's public latest-release endpoint once at startup.
+Clicking `UPDATE vX.Y.Z` downloads the matching executable, checks its size and
+SHA-256 digest against GitHub's release metadata, replaces the installed binary,
+and restarts FindOut. Failed updates show an error and can be retried. Releases
+without a matching executable and digest require a manual download. After an
+update, `WHAT’S NEW` links to that version's GitHub release notes for one hour;
+restarting the client does not reset that hour.
+
+The tray menu includes **Uninstall FindOut…**, followed by a Yes/No confirmation.
+It removes the installed application, startup and application-menu shortcuts,
+local installation state, development metrics, and keychain credentials for
+backend origins recorded by this installation, plus the trial fallback identity.
+A locked keychain stops cleanup with an error so it can be retried. Uninstall
+applies to the current account; downloaded archives, other portable copies,
+server-side records, and credentials from unrecorded legacy backend origins are
+not removed.
+
+Linux installs in `$XDG_DATA_HOME/findout` (normally `~/.local/share/findout`),
+with desktop entries in the XDG applications and autostart directories. Windows
+installs in `%LOCALAPPDATA%\FindOut`, with Start Menu and optional Startup
+shortcuts. macOS installs in `~/Applications/FindOut.app`, stores local state in
+`~/Library/Application Support/FindOut`, and uses
+`~/Library/LaunchAgents/app.findout.client.plist` for optional startup at the next
+login. None of these installations requires administrator access. Windows uses a
+separate PowerShell process to replace or remove the executable after exit.
+
+The release workflow builds Linux x86_64, Windows x86_64, macOS Apple Silicon
+(aarch64), and macOS Intel (x86_64) archives when a `v*` tag is pushed, then
+publishes the archives and standalone updater executables to a GitHub Release.
+Each Mac build runs its tests on a matching native macOS runner and briefly
+launches the packaged app in that disposable session to check startup. Manual workflow
+runs build downloadable artifacts without publishing a release. Set the
+repository Actions variable `FINDOUT_API_ORIGIN` to the production HTTPS API
+origin before tagging. The workflow injects the repository name into the
+binary, so local builds only enable update checking when built with both
+`FINDOUT_API_ORIGIN` and `FINDOUT_GITHUB_REPOSITORY=OWNER/REPO`.
+
+```sh
+FINDOUT_API_ORIGIN=https://api.example.com \
+FINDOUT_GITHUB_REPOSITORY=OWNER/REPO \
+  cargo build --release
+```
+
+Free-trial enrollment is initiated by entering `trial` in the client. Issued
+paid or private activation keys remain a backend/admin operation: do not generate
+or publish them from the client release workflow. Until a private delivery
+channel or commerce provider exists, issue those keys from the backend admin
+tooling and send each key privately.
+
+## Client responsibilities
+
+- Frameless Monolith popup with the platform hotkey: Super+Space on Linux
+  Alt+Space on Windows, and Option+Space on macOS. It opens around the pointer, stays inside the
+  monitor work area, and has no taskbar entry. Windows explicitly disables the
+  borderless-window shadow; X11 uses a utility window hint, while any remaining
+  compositor shadow is controlled by the desktop.
+- A native tray icon keeps the hidden client reachable. Monolith defaults to a
+  white answer area and charcoal input strip. **Light theme** in the tray menu
+  switches between light and dark for the running session.
+- Activation UI with issued-key support, free-trial enrollment, and OS keychain
+  storage. Tokens are isolated by configured backend origin.
+- Text queries with cursor-following horizontal scrolling and selectable,
+  scrollable answers. Answers have no insertion caret; right-click copies them.
+- Follow-up questions send the last four successful question/answer pairs, oldest
+  first, capped at 2,000 characters per question or answer. Full threads are stored
+  locally; the server remains stateless. Earlier images are not included in
+  subsequent follow-up questions.
+- **Recent** expands the five latest conversations within the popup and lets you
+  continue a thread. Dismissing the popup for ten seconds starts fresh. The answer
+  footer identifies web/image usage; saved threads include the corresponding
+  indicators. History stores text and flags, never image bytes.
+  Threads stop at 100 answers rather than silently deleting earlier answers.
+  Desktop history is separated by backend origin and survives restarts; Unix
+  history files are created with owner-only permissions.
+- **Reduce motion** in the tray menu disables the divider, question, arrow and
+  Recent animations for the running session.
+- **Feedback** opens a message form, including before activation. Reply email and
+  license/installation IDs are optional. The backend emails verified IDs, not the
+  bearer token; no LLM, chat history, screenshots or license quota are involved.
+  Failed sends keep the draft. Desktop offers **Copy draft**; web offers **Save text**.
+- Clipboard image paste, including a single PNG/JPEG file copied from Thunar
+  or another Linux file manager offering file references. Ordinary text paths
+  remain text. PNG/JPEG inputs are checked before decode, rejected
+  above 3 MB or the source safety envelope, downscaled to a 4096-pixel maximum edge,
+  padded to a 1920×1080 canvas when small, and sent as PNG.
+- A minimal one-line device context so system-specific “how do I…” answers fit
+  the user's machine.
+
+Escape, the global hotkey, clicking away, or losing focus hides the popup. A
+hidden popup keeps its current view for 10 seconds so an accidental dismissal
+can be recovered; after that the question, answer, status, pending image,
+and active conversation are reset. Recent conversations remain saved until
+you clear them. Ctrl-C stops the development process.
+
+## macOS downloads
+
+Choose `findout-client-macos-aarch64.dmg` for Apple Silicon or
+`findout-client-macos-x86_64.dmg` for Intel. Open the DMG, open `FindOut.app`,
+then click **Install** to install for your account. After installation, eject
+the disk image. The menu-bar icon or Option+Space opens the popup.
+
+Assets labelled **Automatic updater** are used by the app’s update function.
+ZIP downloads on older releases also contain `FindOut.app`.
+
+These builds have ad-hoc executable signatures, but are not Developer ID signed
+or notarized. macOS may block the first launch; use the system's Privacy &
+Security “Open Anyway” flow only if you trust the downloaded release. Public
+notarization requires an Apple Developer signing identity and credentials.
+
+To create a bundle locally on a Mac after building the release executable:
+
+```sh
+python3 scripts/package-macos.py --arch aarch64  # x86_64 on an Intel Mac
+```
+
+## Platform notes
+
+- Linux clipboard image acquisition uses GTK3; the global hotkey requires an
+  X11-capable environment, the popup uses X11 utility/override-redirect hints,
+  and the tray uses StatusNotifierItem/AppIndicator over D-Bus. Desktops need
+  a compatible tray host; GNOME may require its AppIndicator extension. The
+  keychain uses Secret Service.
+- macOS 12 or newer uses Keychain, the native clipboard, and a menu-bar icon.
+  Option+Space opens the popup; Cmd+V pastes images. Popup positioning accounts
+  for Retina scaling and the menu bar/Dock work area. Trial identity uses the
+  existing persistent random Keychain fallback. The app has no Dock icon.
+- Windows uses Credential Manager through the keyring crate and Alt+Space,
+  because Win+Space is reserved for keyboard-layout switching.
+
+## UI regression checks
+
+Verify desktop activation, quota exhaustion and restored activation with a real
+process restart against a local mock backend:
+
+```sh
+cargo build
+python3 tests/quota-desktop.py
+```
+
+This Linux test creates its own display, D-Bus session, temporary Secret Service
+keychain and app storage. It requires Xvfb, xfwm4, xdotool, gnome-keyring-daemon,
+ImageMagick and Tesseract. Screenshots and results go to `target/quota-desktop`.
+See [the verification record](quota-verification-20260922/README.md) for
+coverage and OCR limitations.
+
+
+On Linux, run the scrolling check in a disposable display (requires Xvfb):
+
+```sh
+dbus-run-session -- xvfb-run -a env -u WAYLAND_DISPLAY SLINT_SCALE_FACTOR=1 \
+  cargo test scrolling_ui -- --ignored
+```
+
+The scrolling check uses synthetic questions and answers; it does not access the
+keychain or backend. To check tray registration when the desktop panel starts late
+(requires Xvfb and Python GObject bindings):
+
+```sh
+/usr/bin/python3 tests/tray-host.py target/release/findout-client-dev
+```
+
+This script creates its own disposable display and D-Bus session, with keychain
+service activation disabled. Pass the regular client binary to check that variant.
+Linux waits for a ready tray host for up to 30 attempts during startup, without
+blocking the popup or hotkey.
+
+## Server contract
+
+The client expects an HTTPS server implementing this contract.
+
+```http
+POST /v1/activate
+Content-Type: application/json
+X-FindOut-Protocol: 1
+
+{"activation_key":"..."}
+```
+
+Entering `trial` instead sends an app-specific, stable device identifier derived
+locally from the platform machine identity (or a persisted random fallback):
+
+```json
+{"activation_key":"trial","device_id":"<64 lowercase hex characters>"}
+```
+
+Raw machine identifiers never leave the device. Tokens are scoped to the
+configured backend origin. Trial query responses may include server-controlled
+`X-FindOut-Daily-Limit`, `X-FindOut-Daily-Remaining`, and
+`X-FindOut-Daily-Reset` headers, which the client displays without enforcing a
+local counter.
+
+```http
+POST /v1/query
+Authorization: Bearer <device_token>
+Content-Type: application/json
+X-FindOut-Protocol: 1
+
+{"query":"...",
+ "force_search":false,
+ "previous_turns":[{"query":"earlier question","answer":"earlier answer"}],
+ "image":{"mime_type":"image/png","data":"<base64, optional>"},
+ "system_context":"CachyOS | pkg:pacman | shell:/usr/bin/zsh"}
+```
+
+The backend remains authoritative for request body, query, image, token,
+protocol, activation, tool-loop, concurrency, and provider-cost limits.
