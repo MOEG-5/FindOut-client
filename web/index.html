@@ -21,22 +21,21 @@
       <header class="topbar">
         <div><div class="brand">FINDOUT</div><div class="brand-rule" aria-hidden="true"></div></div>
         <div class="topbar-actions">
-          <span id="networkStatus" class="status-pill"><span class="status-dot"></span><span>ONLINE</span></span>
-          <button id="feedbackButton" class="text-button" type="button">FEEDBACK</button>
+          <button id="newButton" class="text-button" type="button" aria-label="Start a new question" hidden>NEW</button>
           <button id="settingsButton" class="icon-button" type="button" aria-label="Open settings" aria-expanded="false">•••</button>
         </div>
       </header>
 
       <aside id="settingsPanel" class="settings-panel" hidden>
         <button id="themeButton" class="settings-row" type="button" aria-pressed="true"><span>Light theme</span><span aria-hidden="true">✓</span></button>
-        <button id="installButton" class="settings-row" type="button" hidden><span>Install FindOut</span><span aria-hidden="true">↗</span></button>
+        <button id="installButton" class="settings-row" type="button" hidden><span>Install as an app</span><span aria-hidden="true">↗</span></button>
+        <button id="feedbackButton" class="settings-row" type="button"><span>Feedback</span><span aria-hidden="true">↗</span></button>
         <a class="settings-row" href="/privacy.html"><span>Privacy policy</span><span aria-hidden="true">↗</span></a>
         <button id="clearHistoryButton" class="settings-row" type="button"><span>Clear recent history</span><span aria-hidden="true">×</span></button>
         <button id="signOutButton" class="settings-row" type="button"><span>Forget activation</span><span aria-hidden="true">↺</span></button>
       </aside>
 
       <section id="activationView" class="activation-view">
-        <p class="eyebrow">ONE SMALL FORMALITY</p>
         <h1>A little space to find out.</h1>
         <p class="lede">Enter <strong>trial</strong> for free daily usage, or use an activation key.</p>
         <form id="activationForm" class="activation-form">
@@ -48,41 +47,57 @@
       </section>
 
       <section id="mainView" class="main-view" hidden>
-        <section id="answerView" class="answer-view is-waiting" aria-live="polite">
-          <div class="answer-meta"><span id="answerSource">READY</span><button id="copyButton" class="text-button" type="button" hidden>COPY</button></div>
-          <div id="answerText" class="answer-text">Your answer will appear here.</div>
-          <div id="answerActions" class="answer-actions" hidden><button id="searchWebButton" class="secondary-button" type="button">SEARCH WEB</button><span id="allowance" class="allowance"></span></div>
+        <section id="answerView" class="answer-view" aria-live="polite" hidden>
+          <p id="answerQuestion" class="answer-question"></p>
+          <div id="answerText" class="answer-text"></div>
+          <div class="answer-status"><p><span id="answerSource"></span><span id="allowance"></span></p><button id="copyButton" class="text-button" type="button">COPY</button></div>
         </section>
 
-        <button id="newConversationButton" class="text-button" type="button">NEW CONVERSATION</button>
         <form id="queryForm" class="composer">
           <div id="imagePreview" class="image-preview" hidden>
             <img id="imageThumb" alt="Attached image preview" />
-            <div><strong>IMAGE ATTACHED</strong><span id="imageName"></span></div>
+            <span id="imageName"></span>
             <button id="removeImageButton" class="icon-button small" type="button" aria-label="Remove attached image">×</button>
           </div>
           <label class="sr-only" for="queryInput">Question</label>
           <!-- Query length is validated in logic.js using Unicode characters, not UTF-16 units. -->
           <textarea id="queryInput" rows="1" placeholder="What do you want to know?" required></textarea>
           <div class="composer-bar">
-            <div class="composer-options">
-              <button id="attachButton" class="attach-button" type="button" aria-label="Attach an image"><span aria-hidden="true">＋</span><span>IMAGE</span></button>
-              <input id="imageInput" type="file" accept="image/png,image/jpeg" hidden />
-              <label class="search-toggle"><input id="forceSearchInput" type="checkbox" /><span></span>WEB</label>
-            </div>
-            <button id="sendButton" class="send-button" type="submit" aria-label="Ask FindOut"><span>ASK</span><b aria-hidden="true">→</b></button>
+            <button id="attachButton" class="attach-button" type="button" aria-label="Attach an image"><span aria-hidden="true">＋</span><span>IMAGE</span></button>
+            <input id="imageInput" type="file" accept="image/png,image/jpeg" hidden />
+            <button id="sendButton" class="send-button" type="submit" aria-label="Ask FindOut"><span aria-hidden="true">→</span></button>
           </div>
           <p id="queryStatus" class="form-status" role="status"></p>
         </form>
 
         <section id="historySection" class="history-section" hidden>
-          <div class="section-heading"><h2>RECENT</h2><span>LAST FIVE</span></div>
+          <h2 class="section-heading">RECENT</h2>
           <div id="historyList" class="history-list"></div>
         </section>
       </section>
 
-      <div id="installHint" class="install-hint" hidden><span>On iPhone: Share → Add to Home Screen</span><button id="dismissInstallHint" type="button" aria-label="Dismiss">×</button></div>
+      <div id="installHint" class="install-hint" hidden>
+        <span>Add FindOut to your home screen to open it like an app.</span>
+        <button id="installHintButton" class="text-button" type="button">HOW</button>
+        <button id="dismissInstallHint" class="icon-button small" type="button" aria-label="Dismiss">×</button>
+      </div>
     </main>
+
+    <dialog id="installDialog" aria-labelledby="installTitle">
+      <h2 id="installTitle">Add FindOut to your home screen</h2>
+      <ol id="installStepsIos" class="install-steps" hidden>
+        <li>Tap <b>Share</b> <svg class="step-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v12M8 7l4-4 4 4M8 10H6v11h12V10h-2" /></svg> in Safari. On iOS 26 and later it is inside the <b>•••</b> menu next to the address bar.</li>
+        <li>Choose <b>Add to Home Screen</b> <svg class="step-icon" viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="4" width="16" height="16" rx="4" /><path d="M12 8v8M8 12h8" /></svg>. Scroll down or tap <b>View More</b> if you don’t see it.</li>
+        <li>Leave <b>Open as Web App</b> on if you see it, then tap <b>Add</b>.</li>
+      </ol>
+      <ol id="installStepsAndroid" class="install-steps" hidden>
+        <li>Tap your browser’s menu <svg class="step-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="5" r="1.4" /><circle cx="12" cy="12" r="1.4" /><circle cx="12" cy="19" r="1.4" /></svg>, usually at the top right.</li>
+        <li>Choose <b>Install app</b> or <b>Add to home screen</b>. Newer Chrome calls it <b>Install and create shortcut</b>.</li>
+        <li>Confirm with <b>Install</b> or <b>Add</b>.</li>
+      </ol>
+      <p>FindOut then opens from its own icon, full screen, without the browser around it.</p>
+      <div class="dialog-actions"><button id="installDone" type="button">Done</button></div>
+    </dialog>
 
     <dialog id="feedbackDialog" aria-labelledby="feedbackTitle">
       <form id="feedbackForm">
@@ -106,7 +121,7 @@
         <label class="feedback-license"><input id="feedbackConsent" type="checkbox" required /> I agree to send exactly the fields listed above for this submission.</label>
         <p><a href="/privacy.html">Read the privacy policy</a>. Support reports are normally deleted within 90 days.</p>
         <p id="feedbackStatus" role="status"></p>
-        <div class="feedback-actions"><button id="feedbackClose" type="button">Close</button><button id="feedbackSave" type="button">Save text</button><button id="feedbackSend" type="submit">Send</button></div>
+        <div class="dialog-actions"><button id="feedbackClose" type="button">Close</button><button id="feedbackSave" type="button">Save text</button><button id="feedbackSend" type="submit">Send</button></div>
       </form>
     </dialog>
     <template id="historyItemTemplate">

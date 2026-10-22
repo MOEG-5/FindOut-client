@@ -65,18 +65,32 @@ test("PWA activation, quota, Monolith themes and focus recovery", { timeout: 300
     assert.equal(await page.locator("#allowance").innerText(), "");
     assert.equal(queryCount, 0, "activation must not consume a query to discover quota");
 
-    async function ask() {
-      await page.locator("#queryInput").fill("Test question");
-      await page.locator("#sendButton").click();
-      await page.waitForFunction(() => !document.querySelector("#sendButton").disabled);
+    async function ask(target = page, question = "Test question") {
+      await target.locator("#queryInput").fill(question);
+      await target.locator("#sendButton").click();
+      await target.waitForFunction(() => !document.querySelector("#sendButton").disabled);
     }
+    async function activatedPage(options = {}, initScript = null) {
+      const context = await browser.newContext({ serviceWorkers: "block", ...options });
+      if (initScript) await context.addInitScript(initScript);
+      const tab = await context.newPage();
+      tab.setDefaultTimeout(5000);
+      await tab.goto(`http://127.0.0.1:${port}`);
+      await tab.locator("#activationInput").fill("trial");
+      await tab.locator("#activationButton").click();
+      await tab.locator("#mainView").waitFor({ state: "visible" });
+      return { context, tab };
+    }
+    const iphone = "Mozilla/5.0 (iPhone; CPU iPhone OS 18_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.6 Mobile/15E148 Safari/604.1";
+    const android = "Mozilla/5.0 (Linux; Android 15; Pixel 9) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Mobile Safari/537.36";
     await ask();
-    assert.equal(await page.locator("#allowance").innerText(), "12 OF 37 LEFT TODAY · RESETS 2026-09-22 00:00 UTC");
+    assert.equal(await page.locator("#allowance").innerText(), "12/37 left · reset 2026-09-22 00:00 UTC");
+    assert.equal(await page.locator("#answerQuestion").textContent(), "Test question");
     status = 429;
     quota.remaining = 0;
     await ask();
-    assert.equal(await page.locator("#allowance").innerText(), "0 OF 37 LEFT TODAY · RESETS 2026-09-22 00:00 UTC");
-    assert.equal(await page.locator("#queryStatus").innerText(), "DAILY LIMIT REACHED · 0 OF 37 LEFT TODAY · RESETS 2026-09-22 00:00 UTC");
+    assert.equal(await page.locator("#allowance").innerText(), "", "exhaustion is reported once, in the composer");
+    assert.equal(await page.locator("#queryStatus").innerText(), "Daily limit reached · 0/37 left · reset 2026-09-22 00:00 UTC");
 
     await page.reload();
     await page.locator("#mainView").waitFor({ state: "visible" });
@@ -85,7 +99,7 @@ test("PWA activation, quota, Monolith themes and focus recovery", { timeout: 300
     status = 200;
     quota = { limit: 9, remaining: 4, reset: "2026-09-23T00:00:00.000Z" };
     await ask();
-    assert.equal(await page.locator("#allowance").innerText(), "4 OF 9 LEFT TODAY · RESETS 2026-09-23 00:00 UTC");
+    assert.equal(await page.locator("#allowance").innerText(), "4/9 left · reset 2026-09-23 00:00 UTC");
     status = 429;
     quota = null;
     await ask();
@@ -125,7 +139,6 @@ test("PWA activation, quota, Monolith themes and focus recovery", { timeout: 300
 
     await t.test("focus grace keeps quick returns and starts a fresh context after ten seconds", async () => {
       await page.locator("#queryInput").fill("Keep this draft");
-      await page.locator(".search-toggle").click();
       await page.locator("#imageInput").setInputFiles(new URL("../icons/findout-192.png", import.meta.url).pathname);
       await page.locator("#imagePreview").waitFor({ state: "visible" });
       const saved = await page.evaluate(() => localStorage.getItem("findout.threads.v2"));
@@ -148,15 +161,14 @@ test("PWA activation, quota, Monolith themes and focus recovery", { timeout: 300
           const expired = {
             draft: document.querySelector("#queryInput").value,
             image: !document.querySelector("#imagePreview").hidden,
-            answer: document.querySelector("#answerText").textContent,
+            answer: document.querySelector("#answerView").hidden ? null : document.querySelector("#answerText").textContent,
             status: document.querySelector("#queryStatus").textContent,
-            search: document.querySelector("#forceSearchInput").checked,
           };
           return { quick, expired };
         } finally { Date.now = originalNow; }
       });
       assert.deepEqual(result.quick, { draft: "Keep this draft", image: true, answer: "Test answer" });
-      assert.deepEqual(result.expired, { draft: "", image: false, answer: "Your answer will appear here.", status: "", search: false });
+      assert.deepEqual(result.expired, { draft: "", image: false, answer: null, status: "" });
       assert.equal(await page.evaluate(() => localStorage.getItem("findout.threads.v2")), saved);
       status = 200;
       await ask();
@@ -197,11 +209,79 @@ test("PWA activation, quota, Monolith themes and focus recovery", { timeout: 300
         window.pendingAnswers[0](new Response(JSON.stringify({ answer: "Old answer", searched: false })));
         await new Promise(resolve => setTimeout(resolve, 20));
       });
-      assert.equal(await page.locator("#answerText").innerText(), "Your answer will appear here.");
+      assert.equal(await page.locator("#answerView").isHidden(), true);
       assert.equal(await page.locator("#sendButton").isDisabled(), true);
       await page.evaluate(() => window.pendingAnswers[1](new Response(JSON.stringify({ answer: "Fresh answer", searched: false }))));
       await page.waitForFunction(() => !document.querySelector("#sendButton").disabled);
       assert.equal(await page.locator("#answerText").innerText(), "Fresh answer");
+    });
+
+    await t.test("NEW starts a fresh thread without leaving the page", async () => {
+      status = 200;
+      const { context, tab } = await activatedPage();
+      try {
+        assert.equal(await tab.locator("#newButton").isHidden(), true, "nothing to reset yet");
+        await ask(tab, "First question");
+        await ask(tab, "Follow-up");
+        assert.equal(queries.at(-1).previous_turns.length, 1);
+        assert.equal(await tab.locator("#installHint").isHidden(), true, "desktop browsers get no home-screen hint");
+        await tab.locator("#newButton").click();
+        assert.equal(await tab.locator("#answerView").isHidden(), true);
+        assert.equal(await tab.locator("#newButton").isHidden(), true);
+        await ask(tab, "Unrelated question");
+        assert.deepEqual(queries.at(-1).previous_turns, [], "NEW drops the follow-up context");
+        assert.equal(await tab.locator(".history-item").count(), 2, "the earlier thread stays in Recent");
+      } finally { await context.close(); }
+    });
+
+    await t.test("iPhones get home-screen steps after the first answer until dismissed", async () => {
+      const { context, tab } = await activatedPage({ userAgent: iphone, viewport: { width: 390, height: 844 } });
+      try {
+        assert.equal(await tab.locator("#installHint").isHidden(), true, "no hint before the first answer");
+        await ask(tab);
+        await tab.locator("#installHint").waitFor();
+        assert.equal(await tab.locator("#installHintButton").innerText(), "HOW");
+        await tab.locator("#installHintButton").click();
+        assert.equal(await tab.locator("#installStepsIos").isVisible(), true);
+        assert.equal(await tab.locator("#installStepsAndroid").isHidden(), true);
+        await tab.locator("#installDone").click();
+        await tab.locator("#dismissInstallHint").click();
+        await tab.reload();
+        await tab.locator("#mainView").waitFor({ state: "visible" });
+        assert.equal(await tab.locator("#installHint").isHidden(), true, "dismissal persists");
+        assert.equal(await tab.locator("#installButton").evaluate(button => button.hidden), false, "Settings still offers the steps");
+      } finally { await context.close(); }
+    });
+
+    await t.test("the installed app offers no install help", async () => {
+      const { context, tab } = await activatedPage({ userAgent: iphone },
+        () => Object.defineProperty(navigator, "standalone", { value: true }));
+      try {
+        await ask(tab);
+        assert.equal(await tab.locator("#installHint").isHidden(), true);
+        assert.equal(await tab.locator("#installButton").evaluate(button => button.hidden), true);
+      } finally { await context.close(); }
+    });
+
+    await t.test("Android uses the browser's own install prompt and remembers the install", async () => {
+      const { context, tab } = await activatedPage({ userAgent: android, viewport: { width: 390, height: 844 } });
+      try {
+        await ask(tab);
+        assert.equal(await tab.locator("#installHintButton").innerText(), "HOW", "manual steps until the browser offers a prompt");
+        await tab.evaluate(() => {
+          const event = new Event("beforeinstallprompt", { cancelable: true });
+          event.prompt = async () => { window.prompted = true; window.dispatchEvent(new Event("appinstalled")); };
+          window.dispatchEvent(event);
+        });
+        assert.equal(await tab.locator("#installHintButton").innerText(), "INSTALL");
+        await tab.locator("#installHintButton").click();
+        assert.equal(await tab.evaluate(() => window.prompted), true);
+        await tab.locator("#installHint").waitFor({ state: "hidden" });
+        await tab.reload();
+        await tab.locator("#mainView").waitFor({ state: "visible" });
+        assert.equal(await tab.locator("#installHint").isHidden(), true, "a reported install persists");
+        assert.equal(await tab.locator("#installButton").evaluate(button => button.hidden), true);
+      } finally { await context.close(); }
     });
   } finally {
     await browser?.close();

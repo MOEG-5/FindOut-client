@@ -30,6 +30,23 @@ test("query payload matches the desktop protocol", () => {
   }
 });
 
+test("sources label names only what an answer used, like the desktop", async () => {
+  const { sourcesLabel } = await import("../logic.js");
+  assert.equal(sourcesLabel({ searched: false, hadImage: false }), "");
+  assert.equal(sourcesLabel({ searched: true, hadImage: false }), "Used: web");
+  assert.equal(sourcesLabel({ searched: false, hadImage: true }), "Used: image");
+  assert.equal(sourcesLabel({ searched: true, hadImage: true }), "Used: web, image");
+});
+
+test("install help targets iOS, iPadOS and Android only", async () => {
+  const { installPlatform } = await import("../logic.js");
+  assert.equal(installPlatform({ userAgent: "Mozilla/5.0 (iPhone; CPU iPhone OS 18_6 like Mac OS X)" }), "ios");
+  assert.equal(installPlatform({ userAgent: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)", platform: "MacIntel", maxTouchPoints: 5 }), "ios");
+  assert.equal(installPlatform({ userAgent: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)", platform: "MacIntel", maxTouchPoints: 0 }), null);
+  assert.equal(installPlatform({ userAgent: "Mozilla/5.0 (Linux; Android 15; Pixel 9)" }), "android");
+  assert.equal(installPlatform({ userAgent: "Mozilla/5.0 (X11; Linux x86_64)" }), null);
+});
+
 test("trial device identifier is 64 lowercase hex characters", () => {
   const cryptoObject = { getRandomValues(bytes) { bytes.fill(171); return bytes; } };
   assert.match(randomDeviceId(cryptoObject), /^[a-f0-9]{64}$/);

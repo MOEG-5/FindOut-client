@@ -3,7 +3,7 @@ import {
   DEVICE_KEY,
   HISTORY_KEY,
   INSTALL_HINT_KEY,
-  THREADS_KEY, MAX_THREAD_TURNS, normalizeThreads, updateThread, answerIndicators, threadText,
+  THREADS_KEY, MAX_THREAD_TURNS, normalizeThreads, updateThread, sourcesLabel, threadText, installPlatform,
   makeQueryPayload,
   normalizeHistory,
   randomDeviceId,
@@ -16,14 +16,15 @@ const elements = {
   activationView: $("#activationView"), mainView: $("#mainView"), activationForm: $("#activationForm"),
   activationInput: $("#activationInput"), activationButton: $("#activationButton"), activationStatus: $("#activationStatus"),
   queryForm: $("#queryForm"), queryInput: $("#queryInput"), queryStatus: $("#queryStatus"), sendButton: $("#sendButton"),
-  forceSearchInput: $("#forceSearchInput"), imageInput: $("#imageInput"), attachButton: $("#attachButton"),
+  imageInput: $("#imageInput"), attachButton: $("#attachButton"),
   imagePreview: $("#imagePreview"), imageThumb: $("#imageThumb"), imageName: $("#imageName"), removeImageButton: $("#removeImageButton"),
-  answerView: $("#answerView"), answerText: $("#answerText"), answerSource: $("#answerSource"),
-  copyButton: $("#copyButton"), answerActions: $("#answerActions"), searchWebButton: $("#searchWebButton"), allowance: $("#allowance"),
+  answerView: $("#answerView"), answerQuestion: $("#answerQuestion"), answerText: $("#answerText"), answerSource: $("#answerSource"),
+  copyButton: $("#copyButton"), allowance: $("#allowance"),
   historySection: $("#historySection"), historyList: $("#historyList"), historyTemplate: $("#historyItemTemplate"),
-  settingsButton: $("#settingsButton"), settingsPanel: $("#settingsPanel"), installButton: $("#installButton"),
-  clearHistoryButton: $("#clearHistoryButton"), signOutButton: $("#signOutButton"), networkStatus: $("#networkStatus"),
-  installHint: $("#installHint"), dismissInstallHint: $("#dismissInstallHint"),
+  newButton: $("#newButton"), settingsButton: $("#settingsButton"), settingsPanel: $("#settingsPanel"), installButton: $("#installButton"),
+  clearHistoryButton: $("#clearHistoryButton"), signOutButton: $("#signOutButton"),
+  installHint: $("#installHint"), installHintButton: $("#installHintButton"), dismissInstallHint: $("#dismissInstallHint"),
+  installDialog: $("#installDialog"),
 };
 
 let threads = loadThreads();
@@ -40,10 +41,11 @@ let activeThreadId = (!startFresh && threads.at(-1)?.id) || crypto.randomUUID();
 let history = (!startFresh && threads.at(-1)?.turns) || [];
 let attachedImage = null;
 let attachedPreviewUrl = null;
-let lastRequest = null;
 let lastAnswer = null;
 let deferredInstallPrompt = null;
 let activeRequest = null;
+const installTarget = installPlatform(navigator);
+const standalone = matchMedia("(display-mode: standalone)").matches || navigator.standalone === true;
 
 class ApiError extends Error {
   constructor(message, status, headers) {
@@ -77,16 +79,15 @@ function newConversation(focusInput = true) {
   setBusy(false);
   activeThreadId = crypto.randomUUID();
   history = [];
-  lastRequest = null;
   restoreLatestAnswer();
   elements.queryInput.value = "";
-  elements.forceSearchInput.checked = false;
   elements.queryStatus.textContent = "";
   resizeComposer();
   clearImage();
   if (focusInput) elements.queryInput.focus();
 }
-$("#newConversationButton").addEventListener("click", () => newConversation());
+// Phones reset on their own when FindOut is left; a desktop tab rarely is.
+elements.newButton.addEventListener("click", () => newConversation());
 watchFocusLoss(() => {
   if (!elements.mainView.hidden) newConversation(false);
 });
@@ -98,29 +99,15 @@ function setActivated(value) {
   if (value) {
     renderHistory();
     restoreLatestAnswer();
+  } else {
+    elements.newButton.hidden = true;
+    updateInstallUi();
   }
 }
 
+// Quota is only shown from the headers of a live response, never replayed.
 function restoreLatestAnswer() {
-  const latest = history.at(-1);
-  if (!latest) {
-    lastAnswer = null;
-    elements.answerView.classList.add("is-waiting");
-    elements.answerSource.textContent = "READY";
-    setAnswerText("Your answer will appear here.");
-    elements.copyButton.hidden = true;
-    elements.answerActions.hidden = true;
-    elements.searchWebButton.hidden = true;
-    elements.allowance.textContent = "";
-    return;
-  }
-  lastAnswer = latest.answer;
-  elements.answerView.classList.remove("is-waiting");
-  elements.answerSource.textContent = `${answerIndicators(latest)} ${latest.searched ? "FROM THE WEB" : "FROM KNOWLEDGE"}`.trim();
-  setAnswerText(latest.answer);
-  elements.copyButton.hidden = false;
-  elements.answerActions.hidden = true;
-  elements.searchWebButton.hidden = true;
+  renderAnswer(history.at(-1));
   elements.allowance.textContent = "";
 }
 
@@ -137,12 +124,11 @@ function setBusy(busy, activation = false) {
   const button = activation ? elements.activationButton : elements.sendButton;
   button.disabled = busy;
   if (activation) button.textContent = busy ? "WAIT…" : "ACTIVATE";
-  else button.querySelector("span").textContent = busy ? "WAIT…" : "ASK";
+  else button.querySelector("span").textContent = busy ? "···" : "→";
   if (!activation) {
     elements.queryInput.disabled = busy;
     elements.attachButton.disabled = busy;
-    elements.searchWebButton.disabled = busy;
-    $("#newConversationButton").disabled = busy;
+    elements.newButton.disabled = busy;
     elements.clearHistoryButton.disabled = busy;
     elements.signOutButton.disabled = busy;
     elements.historyList.inert = busy;
@@ -150,11 +136,16 @@ function setBusy(busy, activation = false) {
 }
 
 async function api(path, options = {}) {
-  const response = await fetch(path, {
-    ...options,
-    credentials: "same-origin",
-    headers: { "Content-Type": "application/json", ...(options.headers || {}) },
-  });
+  let response;
+  try {
+    response = await fetch(path, {
+      ...options,
+      credentials: "same-origin",
+      headers: { "Content-Type": "application/json", ...(options.headers || {}) },
+    });
+  } catch {
+    throw new Error("Cannot reach the FindOut server");
+  }
   let body = {};
   try { body = await response.json(); } catch { /* server returned no JSON */ }
   if (!response.ok) {
@@ -188,39 +179,41 @@ elements.activationForm.addEventListener("submit", async (event) => {
 
 elements.queryForm.addEventListener("submit", async (event) => {
   event.preventDefault();
-  await ask({ query: elements.queryInput.value, forceSearch: elements.forceSearchInput.checked, image: attachedImage });
+  await ask({ query: elements.queryInput.value, image: attachedImage });
 });
 
-async function ask({ query, forceSearch, image, retry = false }) {
+async function ask({ query, image }) {
   if (activeRequest) return;
   const request = new AbortController();
   activeRequest = request;
   elements.queryStatus.textContent = "";
   setBusy(true);
   try {
-    if (!retry && history.length >= MAX_THREAD_TURNS) throw new Error("This thread has 100 answers. Start a new conversation to continue; this thread stays in Recent.");
-    const payload = retry
-      ? { ...lastRequest, force_search: true }
-      : makeQueryPayload({ query, history, forceSearch, image, systemContext: mobileContext() });
+    // A full thread stays in Recent; the next question quietly starts a new one.
+    if (history.length >= MAX_THREAD_TURNS) {
+      activeThreadId = crypto.randomUUID();
+      history = [];
+    }
+    const payload = makeQueryPayload({ query, history, image, systemContext: mobileContext() });
     const { body, headers } = await api("/api/query", { method: "POST", body: JSON.stringify(payload), signal: request.signal });
     if (activeRequest !== request) return;
     if (typeof body.answer !== "string" || typeof body.searched !== "boolean") throw new Error("FindOut returned an invalid answer");
-    if (retry && history.length) history = history.slice(0, -1);
-    history = [...history, { query: payload.query, answer: body.answer, searched: body.searched, hadImage: Boolean(payload.image), timestamp: Date.now() }];
+    const turn = { query: payload.query, answer: body.answer, searched: body.searched, hadImage: Boolean(payload.image), timestamp: Date.now() };
+    history = [...history, turn];
     saveHistory();
-    lastRequest = payload;
-    lastAnswer = body.answer;
-    showAnswer(body.answer, body.searched, headers, Boolean(payload.image));
+    renderAnswer(turn);
+    elements.allowance.textContent = quotaStatus(headers);
+    elements.answerView.scrollIntoView({ behavior: matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth", block: "start" });
     elements.queryInput.value = "";
-    elements.forceSearchInput.checked = false;
     resizeComposer();
     clearImage();
   } catch (error) {
     if (activeRequest !== request) return;
-    if (error instanceof ApiError) elements.allowance.textContent = quotaStatus(error.headers);
     const quotaStatusText = error instanceof ApiError && error.status === 429
       ? quotaExhaustionStatus(error.headers)
       : "";
+    // The exhaustion message already carries the quota; don't repeat it below the answer.
+    if (error instanceof ApiError) elements.allowance.textContent = quotaStatusText ? "" : quotaStatus(error.headers);
     elements.queryStatus.textContent = quotaStatusText || error.message;
   } finally {
     if (activeRequest === request) {
@@ -230,20 +223,16 @@ async function ask({ query, forceSearch, image, retry = false }) {
   }
 }
 
-function setAnswerText(answer) {
-  elements.answerText.textContent = answer;
-  elements.answerText.classList.toggle("is-short", Array.from(answer).length <= 18 && !answer.includes("\n"));
-}
-
-function showAnswer(answer, searched, headers = null, hadImage = false) {
-  elements.answerView.classList.remove("is-waiting");
-  setAnswerText(answer);
-  elements.answerSource.textContent = `${answerIndicators({ searched, hadImage })} ${searched ? "FROM THE WEB" : "FROM KNOWLEDGE"}`.trim();
-  elements.copyButton.hidden = false;
-  elements.answerActions.hidden = false;
-  elements.searchWebButton.hidden = searched;
-  elements.allowance.textContent = quotaStatus(headers);
-  elements.answerView.scrollIntoView({ behavior: matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth", block: "start" });
+// The answer area only exists once there is an answer, as on the desktop.
+function renderAnswer(turn) {
+  lastAnswer = turn?.answer ?? null;
+  elements.answerView.hidden = !turn;
+  elements.newButton.hidden = !turn;
+  if (!turn) return;
+  elements.answerQuestion.textContent = turn.query;
+  elements.answerText.textContent = turn.answer;
+  elements.answerText.classList.toggle("is-short", Array.from(turn.answer).length <= 18 && !turn.answer.includes("\n"));
+  elements.answerSource.textContent = sourcesLabel(turn);
 }
 
 function renderHistory() {
@@ -255,7 +244,7 @@ function renderHistory() {
     const button = item.querySelector(".history-question");
     const answer = item.querySelector(".history-answer");
     item.querySelector(".history-index").textContent = String(index + 1).padStart(2, "0");
-    item.querySelector(".history-title").textContent = `${turn.query} · ${thread.turns.length} ${thread.turns.length === 1 ? "answer" : "answers"}`;
+    item.querySelector(".history-title").textContent = turn.query;
     answer.textContent = threadText(thread.turns);
     const resume = document.createElement("button");
     resume.type = "button";
@@ -264,7 +253,6 @@ function renderHistory() {
     resume.addEventListener("click", () => {
       activeThreadId = thread.id;
       history = [...thread.turns];
-      lastRequest = null;
       clearImage();
       restoreLatestAnswer();
       elements.queryInput.value = "";
@@ -278,12 +266,8 @@ function renderHistory() {
     });
     elements.historyList.append(item);
   });
+  updateInstallUi();
 }
-
-elements.searchWebButton.addEventListener("click", () => {
-  if (lastRequest) ask({ retry: true });
-  else elements.queryStatus.textContent = "Ask a new question before retrying with web search";
-});
 
 elements.copyButton.addEventListener("click", async () => {
   if (!lastAnswer) return;
@@ -395,11 +379,12 @@ elements.settingsButton.addEventListener("click", () => {
   elements.settingsPanel.hidden = !elements.settingsPanel.hidden;
   elements.settingsButton.setAttribute("aria-expanded", String(!elements.settingsPanel.hidden));
 });
+function closeSettings() {
+  elements.settingsPanel.hidden = true;
+  elements.settingsButton.setAttribute("aria-expanded", "false");
+}
 document.addEventListener("click", (event) => {
-  if (!elements.settingsPanel.hidden && !elements.settingsPanel.contains(event.target) && !elements.settingsButton.contains(event.target)) {
-    elements.settingsPanel.hidden = true;
-    elements.settingsButton.setAttribute("aria-expanded", "false");
-  }
+  if (!elements.settingsPanel.hidden && !elements.settingsPanel.contains(event.target) && !elements.settingsButton.contains(event.target)) closeSettings();
 });
 
 elements.clearHistoryButton.addEventListener("click", () => {
@@ -407,51 +392,67 @@ elements.clearHistoryButton.addEventListener("click", () => {
   threads = [];
   activeThreadId = crypto.randomUUID();
   saveHistory();
-  lastRequest = null;
   restoreLatestAnswer();
-  elements.settingsPanel.hidden = true;
-  elements.settingsButton.setAttribute("aria-expanded", "false");
+  closeSettings();
 });
 
 elements.signOutButton.addEventListener("click", async () => {
   try { await api("/api/logout", { method: "POST", body: "{}" }); } catch { /* local reset still applies */ }
   localStorage.removeItem(ACTIVATED_KEY);
   setActivated(false);
-  elements.settingsPanel.hidden = true;
-  elements.settingsButton.setAttribute("aria-expanded", "false");
+  closeSettings();
 });
 
-function updateNetworkStatus() {
-  const online = navigator.onLine;
-  elements.networkStatus.classList.toggle("offline", !online);
-  elements.networkStatus.lastElementChild.textContent = online ? "ONLINE" : "OFFLINE";
+// Phones get a home-screen hint after their first answer. Nothing is offered
+// inside the installed app, or once the browser reports an install.
+function installState() {
+  try { return localStorage.getItem(INSTALL_HINT_KEY); } catch { return null; }
 }
-window.addEventListener("online", updateNetworkStatus);
-window.addEventListener("offline", updateNetworkStatus);
-
+function setInstallState(value) {
+  try { localStorage.setItem(INSTALL_HINT_KEY, value); } catch { /* Hide for this session only. */ }
+}
+function updateInstallUi() {
+  const offered = !standalone && installState() !== "installed" && Boolean(installTarget || deferredInstallPrompt);
+  elements.installButton.hidden = !offered;
+  elements.installHint.hidden = !offered || !installTarget || installState() === "dismissed" || elements.mainView.hidden || threads.length === 0;
+  elements.installHintButton.textContent = deferredInstallPrompt ? "INSTALL" : "HOW";
+}
+async function offerInstall() {
+  closeSettings();
+  if (deferredInstallPrompt) {
+    const prompt = deferredInstallPrompt;
+    deferredInstallPrompt = null;
+    try { await prompt.prompt(); } catch { /* The browser declined to show its prompt. */ }
+    updateInstallUi();
+    return;
+  }
+  $("#installStepsIos").hidden = installTarget !== "ios";
+  $("#installStepsAndroid").hidden = installTarget !== "android";
+  elements.installDialog.showModal();
+}
 window.addEventListener("beforeinstallprompt", (event) => {
   event.preventDefault();
   deferredInstallPrompt = event;
-  elements.installButton.hidden = false;
+  // Browsers only offer this while FindOut is not installed, so a recorded
+  // install was removed. Keep the menu entry, but don't repeat the hint.
+  if (installState() === "installed") setInstallState("dismissed");
+  updateInstallUi();
 });
-elements.installButton.addEventListener("click", async () => {
-  if (!deferredInstallPrompt) return;
-  await deferredInstallPrompt.prompt();
+window.addEventListener("appinstalled", () => {
   deferredInstallPrompt = null;
-  elements.installButton.hidden = true;
+  setInstallState("installed");
+  updateInstallUi();
 });
-
-const standalone = matchMedia("(display-mode: standalone)").matches || navigator.standalone === true;
-const isiOS = /iphone|ipad|ipod/i.test(navigator.userAgent);
-if (isiOS && !standalone && localStorage.getItem(INSTALL_HINT_KEY) !== "dismissed") elements.installHint.hidden = false;
+elements.installButton.addEventListener("click", offerInstall);
+elements.installHintButton.addEventListener("click", offerInstall);
 elements.dismissInstallHint.addEventListener("click", () => {
-  elements.installHint.hidden = true;
-  localStorage.setItem(INSTALL_HINT_KEY, "dismissed");
+  setInstallState("dismissed");
+  updateInstallUi();
 });
+$("#installDone").addEventListener("click", () => elements.installDialog.close());
 
 if ("serviceWorker" in navigator) window.addEventListener("load", () => navigator.serviceWorker.register("/sw.js"));
 setActivated(localStorage.getItem(ACTIVATED_KEY) === "true");
-updateNetworkStatus();
 renderHistory();
 
 const feedbackDialog = $("#feedbackDialog");
@@ -460,6 +461,7 @@ const feedbackEmail = $("#feedbackEmail");
 const feedbackLicense = $("#feedbackLicense");
 const feedbackConsent = $("#feedbackConsent");
 $("#feedbackButton").addEventListener("click", () => {
+  closeSettings();
   feedbackConsent.checked = false;
   $("#feedbackStatus").textContent = "";
   feedbackDialog.showModal();

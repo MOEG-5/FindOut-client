@@ -64,12 +64,9 @@ button:focus-visible, a:focus-visible { outline: 2px solid currentColor; outline
 .brand { padding-top: 10px; font-size: 14px; font-weight: 700; letter-spacing: .09em; }
 .brand-rule { width: 34px; height: 2px; margin-top: 12px; background: var(--ink); }
 .topbar-actions { display: flex; align-items: center; gap: 4px; }
-.status-pill { display: flex; align-items: center; gap: 6px; min-height: 44px; padding: 0 7px; color: var(--muted); font: 9px var(--mono); letter-spacing: .04em; }
-.status-dot { width: 5px; height: 5px; border-radius: 50%; background: var(--ink); }
-.status-pill.offline .status-dot { background: transparent; border: 1px solid var(--muted); }
 .icon-button { min-width: 44px; height: 44px; padding: 0 9px; border: 0; background: transparent; letter-spacing: 2px; }
 .icon-button.small { font-size: 21px; letter-spacing: 0; }
-.icon-button:hover, .text-button:hover, .secondary-button:hover, .settings-row:hover { background: var(--hover); }
+.icon-button:hover, .text-button:hover, .settings-row:hover { background: var(--hover); }
 
 .settings-panel { position: absolute; z-index: 10; top: calc(max(22px, env(safe-area-inset-top)) + 48px); right: max(18px, env(safe-area-inset-right)); width: min(280px, calc(100% - 36px)); padding: 6px; border: 1px solid var(--line); background: var(--surface); box-shadow: 0 12px 32px #00000014; }
 .settings-row { display: flex; align-items: center; gap: 12px; width: 100%; min-height: 48px; justify-content: space-between; padding: 12px; border: 0; background: transparent; color: var(--secondary); font-size: 13px; text-align: left; text-decoration: none; }
@@ -88,23 +85,20 @@ input::placeholder, textarea::placeholder { color: var(--muted); opacity: 1; }
 .primary-button:focus-visible { outline-color: var(--ink); }
 
 .main-view { display: flex; flex-direction: column; }
-.answer-view { margin: 2px 0 12px; }
-.answer-meta, .section-heading, .answer-actions { display: flex; align-items: center; justify-content: space-between; }
-.answer-meta { min-height: 44px; margin-bottom: 8px; color: var(--muted); font: 9px var(--mono); letter-spacing: .04em; }
+.answer-view { margin: 0 0 12px; scroll-margin-top: 16px; }
+/* The asked question echoes the desktop header line beside FINDOUT. */
+.answer-question { margin: 0; overflow: hidden; color: var(--muted); font-size: 10px; font-weight: 300; letter-spacing: .08em; text-overflow: ellipsis; text-transform: uppercase; white-space: nowrap; }
 .text-button { min-height: 44px; padding: 8px; border: 0; background: transparent; color: var(--secondary); font: 10px var(--mono); letter-spacing: .03em; }
-.answer-text { min-height: 150px; padding: 12px 0 24px; color: var(--ink); font-size: 17px; line-height: 1.65; white-space: pre-wrap; overflow-wrap: anywhere; }
+.answer-text { padding: 14px 0 6px; color: var(--ink); font-size: 17px; line-height: 1.65; white-space: pre-wrap; overflow-wrap: anywhere; }
 .answer-text.is-short { font: 400 clamp(44px, 14vw, 69px)/1.12 Anton, Impact, sans-serif; }
-.answer-view.is-waiting .answer-text { display: flex; align-items: center; color: var(--muted); font-size: 14px; }
-.answer-actions { min-height: 46px; flex-wrap: wrap; gap: 4px 14px; }
-.secondary-button { min-height: 44px; padding: 8px 3px; border: 0; background: transparent; color: var(--secondary); font: 10px var(--mono); }
-.allowance { margin-left: auto; color: var(--muted); font: 9px/1.6 var(--mono); }
-#newConversationButton { align-self: flex-start; margin: 0 0 4px -8px; }
+.answer-status { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.answer-status p { margin: 0; color: var(--muted); font: 9px/1.6 var(--mono); }
+#answerSource:not(:empty) + #allowance:not(:empty)::before { content: " · "; }
+.answer-status .text-button { margin-right: -8px; }
 
 /* Recent stays in the mobile page, below the composer, with expandable threads. */
 .history-section { margin: 4px 0 24px; }
-.section-heading { margin-bottom: 9px; font-family: var(--mono); }
-.section-heading h2 { margin: 0; font-size: 10px; font-weight: 400; letter-spacing: .08em; }
-.section-heading span { color: var(--muted); font-size: 9px; letter-spacing: .04em; }
+.section-heading { margin: 0 0 9px; font: 400 10px var(--mono); letter-spacing: .08em; }
 .history-list { border-top: 1px solid var(--line); }
 .history-item { border-bottom: 1px solid var(--line); }
 .history-question { display: grid; grid-template-columns: 30px minmax(0, 1fr) 25px; align-items: center; width: 100%; min-height: 50px; padding: 15px 4px; border: 0; background: transparent; text-align: left; }
@@ -123,29 +117,19 @@ input::placeholder, textarea::placeholder { color: var(--muted); opacity: 1; }
 .composer textarea::placeholder { color: var(--strip-muted); }
 .composer textarea::selection { color: var(--ink); background: var(--surface); }
 .composer-bar { display: flex; align-items: center; justify-content: space-between; margin-top: 5px; }
-.composer-options { display: flex; align-items: center; gap: 6px; }
-.attach-button, .search-toggle { display: inline-flex; align-items: center; gap: 6px; min-height: 44px; padding: 0 8px; border: 0; background: transparent; color: var(--strip-muted); font: 10px var(--mono); }
+.attach-button { display: inline-flex; align-items: center; gap: 6px; min-height: 44px; margin-left: -8px; padding: 0 8px; border: 0; background: transparent; color: var(--strip-muted); font: 10px var(--mono); }
 .attach-button:hover, .send-button:hover { color: var(--surface); }
 .attach-button > span:first-child { font-size: 19px; }
-.search-toggle { position: relative; cursor: pointer; }
-.search-toggle input { position: absolute; opacity: 0; width: 1px; height: 1px; margin: 0; }
-.search-toggle input:focus-visible + span { outline: 2px solid var(--surface); outline-offset: 3px; }
-.search-toggle > span { position: relative; width: 28px; height: 17px; border: 1px solid var(--strip-line); border-radius: 999px; }
-.search-toggle > span::after { content: ""; position: absolute; top: 3px; left: 3px; width: 9px; height: 9px; border-radius: 50%; background: var(--strip-muted); transition: transform .18s ease; }
-.search-toggle input:checked + span { border-color: var(--surface); }
-.search-toggle input:checked + span::after { transform: translateX(11px); background: var(--surface); }
-.send-button { display: flex; align-items: center; gap: 12px; min-height: 44px; padding: 0 6px 0 15px; border: 0; background: transparent; color: var(--surface); font: 10px var(--mono); }
-.send-button b { font: 400 24px Inter, sans-serif; }
+.send-button { min-width: 44px; min-height: 44px; margin-right: -6px; padding: 0 6px; border: 0; background: transparent; color: var(--surface); font: 400 24px Inter, sans-serif; text-align: right; }
 .image-preview { display: grid; grid-template-columns: 45px minmax(0, 1fr) auto; align-items: center; gap: 10px; margin: 0 0 4px; padding: 8px 0; border-bottom: 1px solid var(--strip-line); }
 .image-preview img { width: 45px; height: 45px; object-fit: cover; }
-.image-preview strong, .image-preview span { display: block; }
-.image-preview strong { font: 9px var(--mono); }
-.image-preview span { margin-top: 3px; overflow: hidden; color: var(--strip-muted); font: 10px var(--mono); text-overflow: ellipsis; white-space: nowrap; }
+.image-preview span { overflow: hidden; color: var(--strip-muted); font: 10px var(--mono); text-overflow: ellipsis; white-space: nowrap; }
 .form-status { min-height: 18px; margin: 7px 0 0; color: var(--secondary); font: 11px/1.6 var(--mono); text-align: left; overflow-wrap: anywhere; }
 .composer .form-status { color: var(--surface); }
 .composer .form-status:empty { display: none; }
-.install-hint { position: fixed; z-index: 12; right: 16px; bottom: calc(16px + var(--safe-bottom)); left: 16px; display: flex; align-items: center; justify-content: space-between; gap: 12px; max-width: 520px; margin: auto; padding: 10px 16px; border: 1px solid var(--line); background: var(--surface); box-shadow: 0 8px 32px #00000014; font-size: 13px; }
-.install-hint button { min-width: 44px; min-height: 44px; border: 0; background: transparent; font-size: 20px; }
+.install-hint { position: fixed; z-index: 12; right: 16px; bottom: calc(16px + var(--safe-bottom)); left: 16px; display: flex; align-items: center; gap: 4px; max-width: 520px; margin: auto; padding: 6px 6px 6px 16px; border: 1px solid var(--line); background: var(--surface); box-shadow: 0 8px 32px #00000014; color: var(--secondary); font-size: 13px; line-height: 1.45; }
+.install-hint span { flex: 1; }
+.install-hint .text-button { color: var(--ink); }
 .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; overflow: hidden; clip: rect(0,0,0,0); white-space: nowrap; border: 0; }
 
 @media (min-width: 650px) {
@@ -156,8 +140,13 @@ input::placeholder, textarea::placeholder { color: var(--muted); opacity: 1; }
   .composer { padding-right: 24px; padding-left: 24px; }
 }
 
-#feedbackDialog { width: min(92vw, 520px); max-height: 90dvh; overflow: auto; padding: 24px; border: 1px solid var(--line); color: var(--ink); background: var(--surface); }
-#feedbackDialog::backdrop { background: #0008; }
+dialog { width: min(92vw, 520px); max-height: 90dvh; overflow: auto; padding: 24px; border: 1px solid var(--line); color: var(--ink); background: var(--surface); }
+dialog::backdrop { background: #0008; }
+#installDialog h2 { margin: 0 0 16px; font-size: 21px; }
+#installDialog p { margin: 16px 0; color: var(--secondary); font-size: 13px; line-height: 1.6; }
+.install-steps { display: grid; gap: 12px; margin: 0; padding-left: 22px; font-size: 15px; line-height: 1.55; }
+.step-icon { width: 1.15em; height: 1.15em; vertical-align: -.2em; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+.step-icon circle { fill: currentColor; stroke: none; }
 #feedbackForm { display: grid; gap: 12px; }
 #feedbackForm h2 { margin: 0; font-size: 21px; }
 #feedbackForm p { font-size: 13px; line-height: 1.6; overflow-wrap: anywhere; }
@@ -169,8 +158,8 @@ input::placeholder, textarea::placeholder { color: var(--muted); opacity: 1; }
 .feedback-payload strong { font-size: 13px; }
 .feedback-payload ul { margin: 8px 0; padding-left: 22px; font-size: 13px; line-height: 1.6; }
 .feedback-payload p { margin: 8px 0 0; }
-.feedback-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
-.feedback-actions button { min-height: 44px; padding: 8px 14px; border: 1px solid var(--line); background: var(--surface); font: 11px var(--mono); }
+.dialog-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
+.dialog-actions button { min-height: 44px; padding: 8px 14px; border: 1px solid var(--line); background: var(--surface); font: 11px var(--mono); }
 #feedbackSend { border-color: var(--ink); color: var(--surface); background: var(--ink); }
 #feedbackSend:focus-visible { outline-color: var(--ink); }
 

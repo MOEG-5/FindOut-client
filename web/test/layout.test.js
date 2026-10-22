@@ -19,13 +19,20 @@ test("activated layout places answer then composer then recent history", () => {
   assert.doesNotMatch(html, /id="emptyState"/);
 });
 
+test("main view carries no web toggle, retry or new-conversation controls", () => {
+  for (const id of ["forceSearchInput", "searchWebButton", "newConversationButton", "networkStatus"]) {
+    assert.doesNotMatch(html, new RegExp(`id="${id}"`));
+  }
+  assert.match(html, /<section id="answerView"[^>]*\shidden>/);
+});
+
 test("activation button is the final visible element in its view", () => {
   const view = html.match(/<section id="activationView"[\s\S]*?<\/section>/)?.[0] || "";
   assert.match(view, /<button id="activationButton"[\s\S]*?<\/button>\s*<\/form>\s*<\/section>$/);
 });
 
 test("offline shell includes quota and privacy resources", () => {
-  assert.match(serviceWorker, /findout-shell-v0\.1\.5-8/);
+  assert.match(serviceWorker, /findout-shell-v0\.1\.5-10/);
   assert.match(serviceWorker, /"\/quota\.js"/);
   assert.match(serviceWorker, /"\/privacy\.html"/);
   assert.match(html, /id="feedbackConsent"[^>]*required/);

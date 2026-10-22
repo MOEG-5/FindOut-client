@@ -52,6 +52,16 @@ export function randomDeviceId(cryptoObject = globalThis.crypto) {
   return Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 
+/**
+ * Which add-to-home-screen instructions apply. iPadOS reports a Mac user agent,
+ * so a touch-capable "MacIntel" is treated as iOS too.
+ */
+export function installPlatform({ userAgent = "", platform = "", maxTouchPoints = 0 } = {}) {
+  if (/iphone|ipad|ipod/i.test(userAgent) || (platform === "MacIntel" && maxTouchPoints > 1)) return "ios";
+  if (/android/i.test(userAgent)) return "android";
+  return null;
+}
+
 export const THREADS_KEY = "findout.threads.v2";
 export const MAX_THREAD_TURNS = 100;
 export function normalizeThreads(value) {
@@ -65,6 +75,11 @@ export function normalizeThreads(value) {
 }
 export function updateThread(threads, id, turns) {
   return normalizeThreads([...threads.filter(t => t.id !== id), { id, turns }]);
+}
+/** Matches the desktop status line: name only the sources an answer used. */
+export function sourcesLabel(turn) {
+  const used = [turn.searched ? "web" : "", turn.hadImage ? "image" : ""].filter(Boolean);
+  return used.length ? `Used: ${used.join(", ")}` : "";
 }
 export function answerIndicators(turn) {
   return [turn.searched ? "🌐" : "", turn.hadImage ? "📷" : ""].filter(Boolean).join(" ");

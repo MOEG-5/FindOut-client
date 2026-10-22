@@ -35,12 +35,24 @@ service-role capabilities remain confined to the existing backend.
 
 The PWA uses the desktop Monolith theme, starting in light mode. Toggle
 **Light theme** in Settings for the dark variant; the choice is saved on the
-device and also applies to the privacy page. Recent conversations stay below
-the composer with expandable transcripts and **Continue thread**. Switching
-away or losing browser focus for ten seconds starts a fresh conversation;
-returning sooner preserves the current question and thread. Completed
-conversations remain in Recent. An unfinished request is canceled when the
-grace period expires, so a late response cannot appear in the new thread.
+device and also applies to the privacy page. Feedback also lives in Settings.
+Like the desktop, the answer area appears only once there is an answer, with the
+asked question above it and one status line (sources used, quota, **Copy**)
+below. There is no web-search toggle; the server decides when to search.
+**New** in the header starts a fresh thread, mainly for desktop browsers, where
+a tab is rarely left. Recent threads stay below the composer with expandable
+transcripts and **Continue thread**. Switching away or losing browser focus for
+ten seconds also starts a fresh thread; returning sooner preserves the current
+question and thread. Completed threads remain in Recent. An unfinished request
+is canceled when the grace period expires, so a late response cannot appear in
+the new thread.
+
+On iPhone, iPad and Android, a dismissible hint after the first answer explains
+adding FindOut to the home screen. **How** opens steps for that platform. Where
+the browser offers its own install prompt (Chrome on Android), the hint shows
+**Install** and opens it directly. **Install as an app** in Settings remains
+after dismissal. Nothing is offered inside the installed app (standalone display
+mode), or after the browser reports an install with `appinstalled`.
 
 Run the quota-flow browser regression with `npm ci` followed by
 `CHROMIUM_PATH=/path/to/chromium npm run test:browser` from `web`.

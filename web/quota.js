@@ -24,11 +24,11 @@ function resetLabel(resetAt) {
 
 export function quotaStatus(headers) {
   const quota = quotaMetadata(headers);
-  return quota ? `${quota.remaining} OF ${quota.limit} LEFT TODAY · RESETS ${resetLabel(quota.resetAt)}` : "";
+  return quota ? `${quota.remaining}/${quota.limit} left · reset ${resetLabel(quota.resetAt)}` : "";
 }
 
 /** A quota 429 is distinguished by the authoritative zero-remaining headers. */
 export function quotaExhaustionStatus(headers) {
   const quota = quotaMetadata(headers);
-  return quota?.remaining === 0 ? `DAILY LIMIT REACHED · ${quotaStatus(headers)}` : "";
+  return quota?.remaining === 0 ? `Daily limit reached · ${quotaStatus(headers)}` : "";
 }
