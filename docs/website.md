@@ -24,3 +24,7 @@ Download links use GitHub's `releases/latest/download/` URLs, so they follow new
 releases without changing the page. Keep the release archive names stable.
 When the desktop screenshot changes, copy `docs/findout-screenshot.png` to
 `site/assets/findout.png` and update its dimensions and alt text if needed.
+
+The stylesheet link in `site/index.html` carries a version query
+(`style.css?v=N`). GitHub Pages lets browsers cache CSS for ten minutes, so bump
+`N` whenever `style.css` changes to avoid visitors seeing new HTML with old CSS.

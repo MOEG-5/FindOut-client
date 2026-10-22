@@ -90,6 +90,20 @@ small { display: block; margin-top: 7px; color: #c4c4c4; font-size: 10px; }
 .footer nav { display: flex; gap: 28px; color: var(--muted); }
 .footer nav a { display: flex; align-items: center; min-height: 44px; gap: 8px; }
 
+@media (min-width: 721px) and (max-height: 700px) {
+  .masthead { min-height: 52px; }
+  .hero { padding-block: 8px 16px; }
+  h1 { font-size: clamp(56px, min(10.4vw, 12vh), 150px); }
+  .lede { margin-top: 14px; }
+  .app figcaption { padding-top: 14px; }
+  .download { padding-block: 16px 14px; }
+  .download-heading { margin-bottom: 12px; }
+  h2 { font-size: 34px; }
+  .downloads a { min-height: 56px; padding-block: 8px; }
+  .footer { min-height: 48px; }
+  .web-link, .footer nav a { min-height: 36px; }
+}
+
 @media (max-width: 1050px) {
   .wrap { width: calc(100% - 64px); }
   .hero { gap: 40px; padding-block: 32px 44px; }
